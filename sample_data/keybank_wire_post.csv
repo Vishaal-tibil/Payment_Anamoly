@@ -1,0 +1,3 @@
+wire_ref,debtor_name,creditor_name,creditor_account_number,settled_amount,currency,wire_fee,wire_status,business_id,relationship_manager,internal_batch_id
+WIRE-1001,John A. Rutherford,Solstice Roasters LLC,US64SVBKUS6S3300958879,15000.00,USD,25.00,COMPLETED,MERCH-88214,J. Alvarez,BATCH-20260821-07
+WIRE-1002,Priya Chandrasekaran,Solstice Roasters LLC,US64SVBKUS6S3300958879,4250.50,USD,12.50,COMPLETED,MERCH-88214,J. Alvarez,BATCH-20260821-07

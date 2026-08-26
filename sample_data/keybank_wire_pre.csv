@@ -1,0 +1,3 @@
+wire_ref,debtor_name,debtor_account_number,creditor_name,creditor_account_number,instructed_amount,currency,ofac_screen_result,aml_screen_result,business_id,relationship_manager,wire_status
+WIRE-1001,John A. Rutherford,DE89370400440532013000,Solstice Roasters LLC,US64SVBKUS6S3300958879,15000.00,USD,CLEAR,CLEAR,MERCH-88214,J. Alvarez,INITIATED
+WIRE-1002,Priya Chandrasekaran,GB29NWBK60161331926819,Solstice Roasters LLC,US64SVBKUS6S3300958879,4250.50,USD,CLEAR,CLEAR,MERCH-88214,J. Alvarez,INITIATED

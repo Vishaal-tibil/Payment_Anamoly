@@ -1,0 +1,4 @@
+transaction_id,merchant_id,legal_name,amount,currency,status,processor,onboarded_by
+CARD-KB-9001,MERCH-CARD-01,Bluebird Coffee Roasters LLC,42.50,USD,SETTLED,Airwallex,BRANCH_OPS
+CARD-KB-9002,MERCH-CARD-01,Bluebird Coffee Roasters LLC,18.75,USD,SETTLED,Airwallex,BRANCH_OPS
+CARD-KB-9003,MERCH-CARD-02,Ferrous Hardware Supply Co,215.00,USD,SETTLED,Worldpay,BRANCH_OPS
