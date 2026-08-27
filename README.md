@@ -24,8 +24,9 @@ are sufficient at this volume.
 | 5 | Feature Store (dashboard/summary features) | ✅ Built |
 | 6a | **Fraud/Anomaly Detection engine — this doc** | ✅ Built — Tracks A–D + final aggregation all merged |
 | 6b | **Operational Issues engine — this doc** | 🔨 2/4 issues built (Duplicate Payment, Formatting Rejection), see below |
-| 6c–d | Reconciliation / Payment Health engines | ⏳ Not started |
-| 7 | LLM Agent Layer (Mistral) | ⏳ Not started |
+| 6c | **Reconciliation engine — this doc** | ✅ Built |
+| 6d | Payment Health engine | ⏳ Not started |
+| 7 | LLM Agent Layer (Mistral) | ⏳ Not started — `.env` scaffolding ready, awaiting API key |
 | 8 | Serving API | ⏳ Not started |
 
 ## Team & ownership — Fraud/Anomaly Detection engine (concluded)
@@ -108,11 +109,13 @@ full output already populated — Track A snapshots (83 merchant weekly rows + 9
 individual to-date rows), `isolation_forest_score`, `cluster_id`/`cluster_changed`,
 `timeseries_drift_score`/`funnel_drift_score`, and `final_anomaly_score`/
 `anomaly_band` (174 rows scored: 98 Normal, 68 Low-Medium, 6 High, 2 Critical) —
-and Operational Issues' Duplicate Payment + Formatting Rejection output (20
+Operational Issues' Duplicate Payment + Formatting Rejection output (20
 retry-linked groups checked, 18 flagged; 19 format rejections listed; 63
-merchant-weeks scored for reject-rate drift, 7 flagged as spikes). You do not
-need to run any ingestion or scoring pipeline — just pull `main` and start
-querying `EntitySnapshot` / `OperationalIssue`.
+merchant-weeks scored for reject-rate drift, 7 flagged as spikes), and
+Reconciliation's output (520 transactions checked, 30 confirmed breaks, 3
+provisional variances). You do not need to run any ingestion or scoring
+pipeline — just pull `main` and start querying `EntitySnapshot` /
+`OperationalIssue` / `ReconciliationBreak`.
 
 **Expect exactly 2 failures, not 0**, the first time you run `pytest -q` against
 this committed real data: `test_ingest_sample_pre_then_post_merges_into_one_row`
@@ -197,6 +200,10 @@ correctly.
   progress). `models.py` has `OperationalIssue`; `duplicate_payment.py` and
   `format_rejection.py` are built. If you're adding Network/Processor Timeout or
   Batch Never Settles, your new file goes here too — see that section below.
+- `app/reconciliation/` — the Reconciliation engine's own subpackage (Step 6c,
+  complete). `models.py` has `ReconciliationBreak`; `breaks.py` is the only
+  detector needed (deterministic — no rolling z-score half like Operational
+  Issues, since reconciliation is inherently fact-based, not a rate).
 - `unsupervised-anomaly-detection-knowledge.md` (repo root) — the design doc the
   fraud/anomaly engine follows: profile-based, unsupervised, Isolation Forest +
   HDBSCAN + time-series, scored 0–100 per entity. **Read this in full before
@@ -571,7 +578,7 @@ class OperationalIssue(Base):
    (`tests/test_duplicate_payment.py`/`test_format_rejection.py` are the
    pattern) — synthetic fixtures per issue type, plus a real-data run
    reporting how many of each issue type actually show up.
-5. `pytest -q` — must stay green (98 existing + yours; **2 known failures against
+5. `pytest -q` — must stay green (108 existing + yours; **2 known failures against
    the committed real data are expected, not yours to fix** — see Setup above).
 6. Endpoints in `app/main.py` following the existing four `/operations/*`
    ones as the pattern (`POST .../compute`, feeding the shared `GET
@@ -596,6 +603,43 @@ Step 7 (the LLM agent layer) and Step 8 (the serving API) read from *both*
 (operational) to produce one combined per-merchant/per-individual picture —
 that integration is the next milestone after both engines have real output to
 combine, not something either engine needs to anticipate in its own code now.
+
+## Reconciliation engine (Step 6c) — built
+
+A third separate engine, same shape as Operational Issues: its own subpackage
+(`app/reconciliation/`), its own output table, reads `CanonicalEvent` directly,
+writes nothing to `EntitySnapshot`/`OperationalIssue`. Answers "does the
+settled amount match what the ledger actually posted" — a completed
+comparison the source already ran, not a fraud verdict, so (same as
+Operational Issues) reading `reconciliation_status`/
+`reconciliation_variance_amount` directly is fine, no leakage concern.
+
+**Two detection types, both confirmed against real data before being built —
+neither is inferred from the other:**
+- `CONFIRMED_BREAK`: the source already set `reconciliation_status="BREAK"`.
+  Checked first, since **not every BREAK carries a nonzero variance** — of 30
+  real BREAK-status transactions, only 18 have `reconciliation_variance_amount
+  != 0`; the other 12 were flagged for reasons the dollar amount alone
+  doesn't capture (a missing ledger entry, a reference mismatch). Inferring
+  breaks from variance alone would silently miss 40% of them.
+- `PROVISIONAL_VARIANCE`: the source hasn't called it a break yet
+  (`reconciliation_status` is something else, typically
+  `NOT_YET_RECONCILED`), but `reconciliation_variance_amount` is already
+  nonzero — an early-warning signal ahead of the source's own official
+  verdict. Real result: 3 such transactions in the Meridian data, genuinely
+  showing a live mismatch before the source's pipeline caught up to it.
+
+**Real Meridian data result**: 520 transactions checked, **30 confirmed
+breaks**, **3 provisional variances**.
+
+**Where it lives**: `app/reconciliation/models.py` (`ReconciliationBreak`),
+`app/reconciliation/breaks.py` (`detect_reconciliation_breaks()`).
+`POST /reconciliation/breaks/compute`,
+`GET /reconciliation/breaks?tenant_bank_id=...&detection_type=...`. Tests in
+`tests/test_reconciliation.py`, including the same delete-scope regression
+test as `detect_duplicate_payments()` (a rerun that finds nothing must still
+clear stale rows from a previous run — same bug class caught earlier in
+`beneficiary_features.py`).
 
 ## Shared workflow (everyone) — this is how Tracks A–D actually shipped
 
@@ -631,9 +675,9 @@ combined output. Next up: Step 6b (Operational Issues, above), then Steps 7–8.
 ## Running tests
 
 ```bash
-pytest -q                                        # full suite, 98 tests total. Against the committed real data: 96
+pytest -q                                        # full suite, 108 tests total. Against the committed real data: 106
                                                   # passing, 2 expected KEYBANK failures (see Setup above). On a clean
-                                                  # DB reset: 97 passing, 1 expected failure (needs real Meridian data --
+                                                  # DB reset: 107 passing, 1 expected failure (needs real Meridian data --
                                                   # test_train_endpoint_scores_real_meridian_data). Never both states at
                                                   # once; that's expected, not a regression either way.
 pytest tests/test_anomaly_features.py -v         # Track A
@@ -642,4 +686,5 @@ pytest tests/test_timeseries.py -v               # Track C (merchant drift + Fun
 pytest tests/test_clustering.py -v               # Track D
 pytest tests/test_duplicate_payment.py -v        # Operational Issues: Duplicate Payment
 pytest tests/test_format_rejection.py -v         # Operational Issues: Formatting Rejection
+pytest tests/test_reconciliation.py -v           # Reconciliation
 ```

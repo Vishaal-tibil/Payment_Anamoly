@@ -486,6 +486,47 @@ SCHEMAS: dict[str, dict] = {
         },
         "required": ["total", "issues"],
     },
+    "DetectReconciliationBreaksResult": {
+        "type": "object",
+        "description": "Returned by POST /reconciliation/breaks/compute.",
+        "properties": {
+            "transactions_checked": {"type": "integer", "description": "Transactions with a non-null reconciliation_status."},
+            "confirmed_breaks": {"type": "integer", "description": "reconciliation_status == \"BREAK\" (source-flagged)."},
+            "provisional_variances": {"type": "integer", "description": "Not yet BREAK, but reconciliation_variance_amount is already nonzero -- an early-warning signal."},
+        },
+        "required": ["transactions_checked", "confirmed_breaks", "provisional_variances"],
+    },
+    "ReconciliationBreak": {
+        "type": "object",
+        "description": (
+            "One detected reconciliation problem. detection_type is "
+            "CONFIRMED_BREAK (source already called it a break -- not every "
+            "one carries a nonzero variance_amount, some are flagged for "
+            "other reasons) or PROVISIONAL_VARIANCE (source hasn't called it "
+            "a break yet, but the variance is already nonzero)."
+        ),
+        "properties": {
+            "id": {"type": "integer"},
+            "tenant_bank_id": {"type": "string"},
+            "transaction_id": {"type": "string"},
+            "rail_type": {"type": "string"},
+            "detection_type": {"type": "string", "enum": ["CONFIRMED_BREAK", "PROVISIONAL_VARIANCE"]},
+            "source_reconciliation_status": _NULLABLE_STRING,
+            "variance_amount": _NULLABLE_NUMBER,
+            "amount": _NULLABLE_NUMBER,
+            "details": _NULLABLE_OBJECT,
+            "detected_at": _DATETIME,
+        },
+        "required": ["id", "tenant_bank_id", "transaction_id", "rail_type", "detection_type", "detected_at"],
+    },
+    "ReconciliationBreakList": {
+        "type": "object",
+        "properties": {
+            "total": {"type": "integer"},
+            "breaks": {"type": "array", "items": {"$ref": "#/components/schemas/ReconciliationBreak"}},
+        },
+        "required": ["total", "breaks"],
+    },
 }
 
 # --- Per-path response overrides ----------------------------------------
@@ -530,6 +571,8 @@ RESPONSES: dict[tuple[str, str], dict[str, dict]] = {
     ("post", "/operations/format-rejections/compute"): {"200": {"schema": "ListFormatRejectionsResult", "description": "Format-rejection listing run completed."}},
     ("post", "/operations/format-rejections/spikes/compute"): {"200": {"schema": "ScoreFormatRejectionDriftResult", "description": "Format-rejection rate drift scoring run completed."}},
     ("get", "/operations/issues"): {"200": {"schema": "OperationalIssueList", "description": "Page of detected operational issues, most recent first."}},
+    ("post", "/reconciliation/breaks/compute"): {"200": {"schema": "DetectReconciliationBreaksResult", "description": "Reconciliation break detection run completed."}},
+    ("get", "/reconciliation/breaks"): {"200": {"schema": "ReconciliationBreakList", "description": "Page of detected reconciliation breaks, most recent first."}},
 }
 
 TAGS: dict[str, list[str]] = {
@@ -545,6 +588,7 @@ TAGS: dict[str, list[str]] = {
     "Operational Issues - Duplicate Payment (Step 6b)": ["/operations/duplicate-payments/compute"],
     "Operational Issues - Formatting Rejection (Step 6b)": ["/operations/format-rejections/compute", "/operations/format-rejections/spikes/compute"],
     "Operational Issues - Issue Feed (Step 6b)": ["/operations/issues"],
+    "Reconciliation (Step 6c)": ["/reconciliation/breaks/compute", "/reconciliation/breaks"],
 }
 
 
