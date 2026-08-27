@@ -77,3 +77,60 @@ class EntitySnapshot(Base):
 
     final_anomaly_score = Column(Float, nullable=True)  # 0-100, aggregation step only
     anomaly_band = Column(String, nullable=True)  # Normal / Low-Medium / High / Critical, aggregation step only
+
+
+class BeneficiarySnapshot(Base):
+    """Funnel-account detection input. Deliberately a SEPARATE table from
+    EntitySnapshot, not a variant of it -- EntitySnapshot is grouped by
+    SENDER (one row per merchant/individual) and answers "how many
+    different people did this entity pay" (unique_counterparties).
+    Funnel detection needs the opposite question: "how many different
+    senders paid THIS beneficiary, and how many of them are new."
+    EntitySnapshot structurally cannot answer that no matter what's built
+    on top of it (Isolation Forest, clustering) -- it requires grouping
+    raw canonical_events by counterparty instead of by resolved party,
+    which is what this table does.
+
+    Same leakage rule as EntitySnapshot: every value here is computed
+    fresh from raw canonical_events facts (payee identity, payer identity,
+    amount, transaction_occurred_at), never from the source's own
+    funnel_account_flag / distinct_originating_accounts_24h/7d in
+    fraud_risk_details. See beneficiary_features.py's module docstring.
+    """
+
+    __tablename__ = "anomaly_beneficiary_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # payee_account_ref when available (a real account reference, stable
+    # across rails); falls back to payee_name (bare string) only when no
+    # account ref was captured for that transaction -- see
+    # beneficiary_features.py's _beneficiary_key().
+    beneficiary_key = Column(String, nullable=False, index=True)
+    beneficiary_name = Column(String, nullable=True)  # display only: last-seen payee_name for this key
+    tenant_bank_id = Column(String, nullable=False, index=True)
+
+    window_start = Column(DateTime(timezone=True), nullable=False)
+    window_end = Column(DateTime(timezone=True), nullable=False)
+
+    transaction_count = Column(Integer, nullable=False, default=0)
+    amount_total = Column(Float, nullable=True)
+
+    distinct_senders = Column(Integer, nullable=False, default=0)
+    # Senders paying THIS beneficiary for the first time ever (not "first
+    # time this week") as of this window -- computed the same
+    # first-sighting-tracking way as EntitySnapshot's new_counterparty_ratio,
+    # just from the beneficiary's side of the relationship instead of the
+    # sender's.
+    distinct_new_senders = Column(Integer, nullable=False, default=0)
+    new_sender_ratio = Column(Float, nullable=True)
+    sender_party_types = Column(JSON, nullable=True)  # e.g. ["MERCHANT", "INDIVIDUAL"] -- who's paying them
+
+    computed_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    # Output: Track C only for now (see timeseries.py's score_funnel_drift).
+    # Isolation Forest/clustering don't currently run against this table --
+    # would mean a third segment-model, deliberately out of scope for v1
+    # per the funnel gap discussion (a rule/drift-based signal here is a
+    # better fit than ML at this data volume anyway).
+    funnel_drift_score = Column(Float, nullable=True)

@@ -10,8 +10,10 @@ from sqlalchemy.orm import Session
 
 from . import models  # noqa: F401  -- registers tables on Base.metadata
 from .anomaly import models as anomaly_models  # noqa: F401  -- registers anomaly_entity_snapshots
+from .anomaly.beneficiary_features import compute_beneficiary_snapshots
 from .anomaly.features import compute_snapshots
-from .anomaly.models import EntitySnapshot
+from .anomaly.models import BeneficiarySnapshot, EntitySnapshot
+from .anomaly.timeseries import score_drift, score_funnel_drift
 from .database import Base, SessionLocal, engine, get_db
 from .feature_store import compute_features
 from .ingestion import process_file
@@ -353,4 +355,89 @@ async def list_snapshots(
     return {
         "total": total,
         "snapshots": [_snapshot_summary(s) for s in rows],
+    }
+
+
+# --- Anomaly detection engine: Track C (time-series drift) ---
+
+class ScoreDriftRequest(BaseModel):
+    tenant_bank_id: str | None = None
+
+
+@app.post("/anomaly/timeseries/compute")
+async def score_drift_endpoint(
+    body: ScoreDriftRequest = ScoreDriftRequest(),
+    db: Session = Depends(get_db),
+):
+    return score_drift(db, tenant_bank_id=body.tenant_bank_id)
+
+
+# --- Anomaly detection engine: Funnel Account (Track A input + Track C scoring) ---
+# Deliberately separate from /anomaly/snapshots above -- BeneficiarySnapshot
+# is grouped by receiver, not sender. See app/anomaly/beneficiary_features.py.
+
+class ComputeBeneficiarySnapshotsRequest(BaseModel):
+    tenant_bank_id: str | None = None
+
+
+@app.post("/anomaly/beneficiary-snapshots/compute")
+async def compute_beneficiary_snapshots_endpoint(
+    body: ComputeBeneficiarySnapshotsRequest = ComputeBeneficiarySnapshotsRequest(),
+    db: Session = Depends(get_db),
+):
+    return compute_beneficiary_snapshots(db, tenant_bank_id=body.tenant_bank_id)
+
+
+class ScoreFunnelDriftRequest(BaseModel):
+    tenant_bank_id: str | None = None
+
+
+@app.post("/anomaly/funnel/compute")
+async def score_funnel_drift_endpoint(
+    body: ScoreFunnelDriftRequest = ScoreFunnelDriftRequest(),
+    db: Session = Depends(get_db),
+):
+    return score_funnel_drift(db, tenant_bank_id=body.tenant_bank_id)
+
+
+def _beneficiary_snapshot_summary(s: BeneficiarySnapshot) -> dict:
+    return {
+        "id": s.id,
+        "beneficiary_key": s.beneficiary_key,
+        "beneficiary_name": s.beneficiary_name,
+        "tenant_bank_id": s.tenant_bank_id,
+        "window_start": s.window_start,
+        "window_end": s.window_end,
+        "transaction_count": s.transaction_count,
+        "amount_total": s.amount_total,
+        "distinct_senders": s.distinct_senders,
+        "distinct_new_senders": s.distinct_new_senders,
+        "new_sender_ratio": s.new_sender_ratio,
+        "sender_party_types": s.sender_party_types,
+        "funnel_drift_score": s.funnel_drift_score,
+        "computed_at": s.computed_at,
+    }
+
+
+@app.get("/anomaly/beneficiary-snapshots")
+async def list_beneficiary_snapshots(
+    tenant_bank_id: str,
+    beneficiary_key: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    base_query = db.query(BeneficiarySnapshot).filter(BeneficiarySnapshot.tenant_bank_id == tenant_bank_id)
+    if beneficiary_key:
+        base_query = base_query.filter(BeneficiarySnapshot.beneficiary_key == beneficiary_key)
+    total = base_query.count()
+    rows = (
+        base_query.order_by(BeneficiarySnapshot.beneficiary_key, BeneficiarySnapshot.window_start)
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return {
+        "total": total,
+        "snapshots": [_beneficiary_snapshot_summary(s) for s in rows],
     }
