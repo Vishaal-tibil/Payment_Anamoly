@@ -24,6 +24,9 @@ from .operations import models as operations_models  # noqa: F401  -- registers 
 from .operations.duplicate_payment import detect_duplicate_payments
 from .operations.format_rejection import list_format_rejections, score_format_rejection_drift
 from .operations.models import OperationalIssue
+from .reconciliation import models as reconciliation_models  # noqa: F401  -- registers reconciliation_breaks
+from .reconciliation.breaks import detect_reconciliation_breaks
+from .reconciliation.models import ReconciliationBreak
 from .resolution import resolve_parties
 from .seed import seed_sample_mappings_if_empty
 
@@ -584,4 +587,63 @@ async def list_operational_issues(
     return {
         "total": total,
         "issues": [_operational_issue_summary(i) for i in rows],
+    }
+
+
+# --- Reconciliation engine (Step 6c) ---
+# A separate engine from both the fraud/anomaly one and Operational
+# Issues -- writes to its own reconciliation_breaks table. Reads
+# reconciliation_status/reconciliation_variance_amount directly: these
+# are the source's own completed network-vs-ledger comparison, not a
+# fraud verdict, so there's no leakage concern (same reasoning as
+# Operational Issues -- see README).
+
+class DetectReconciliationBreaksRequest(BaseModel):
+    tenant_bank_id: str | None = None
+
+
+@app.post("/reconciliation/breaks/compute")
+async def detect_reconciliation_breaks_endpoint(
+    body: DetectReconciliationBreaksRequest = DetectReconciliationBreaksRequest(),
+    db: Session = Depends(get_db),
+):
+    return detect_reconciliation_breaks(db, tenant_bank_id=body.tenant_bank_id)
+
+
+def _reconciliation_break_summary(row: ReconciliationBreak) -> dict:
+    return {
+        "id": row.id,
+        "tenant_bank_id": row.tenant_bank_id,
+        "transaction_id": row.transaction_id,
+        "rail_type": row.rail_type,
+        "detection_type": row.detection_type,
+        "source_reconciliation_status": row.source_reconciliation_status,
+        "variance_amount": row.variance_amount,
+        "amount": row.amount,
+        "details": row.details,
+        "detected_at": row.detected_at,
+    }
+
+
+@app.get("/reconciliation/breaks")
+async def list_reconciliation_breaks(
+    tenant_bank_id: str,
+    detection_type: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    base_query = db.query(ReconciliationBreak).filter(ReconciliationBreak.tenant_bank_id == tenant_bank_id)
+    if detection_type:
+        base_query = base_query.filter(ReconciliationBreak.detection_type == detection_type.upper())
+    total = base_query.count()
+    rows = (
+        base_query.order_by(ReconciliationBreak.detected_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return {
+        "total": total,
+        "breaks": [_reconciliation_break_summary(r) for r in rows],
     }

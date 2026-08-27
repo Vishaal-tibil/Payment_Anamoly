@@ -745,6 +745,79 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       tags:
       - Operational Issues - Issue Feed (Step 6b)
+  /reconciliation/breaks/compute:
+    post:
+      summary: Detect Reconciliation Breaks Endpoint
+      operationId: detect_reconciliation_breaks_endpoint_reconciliation_breaks_compute_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DetectReconciliationBreaksRequest'
+              default: {}
+      responses:
+        '200':
+          description: Reconciliation break detection run completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetectReconciliationBreaksResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      tags:
+      - Reconciliation (Step 6c)
+  /reconciliation/breaks:
+    get:
+      summary: List Reconciliation Breaks
+      operationId: list_reconciliation_breaks_reconciliation_breaks_get
+      parameters:
+      - name: tenant_bank_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Tenant Bank Id
+      - name: detection_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Detection Type
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 50
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Page of detected reconciliation breaks, most recent first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReconciliationBreakList'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      tags:
+      - Reconciliation (Step 6c)
 components:
   schemas:
     Body_ingest_file_ingest_file_post:
@@ -822,6 +895,15 @@ components:
           title: Tenant Bank Id
       type: object
       title: DetectDuplicatePaymentsRequest
+    DetectReconciliationBreaksRequest:
+      properties:
+        tenant_bank_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tenant Bank Id
+      type: object
+      title: DetectReconciliationBreaksRequest
     HTTPValidationError:
       properties:
         detail:
@@ -1657,6 +1739,68 @@ components:
       required:
       - total
       - issues
+    DetectReconciliationBreaksResult:
+      type: object
+      description: Returned by POST /reconciliation/breaks/compute.
+      properties:
+        transactions_checked:
+          type: integer
+          description: Transactions with a non-null reconciliation_status.
+        confirmed_breaks:
+          type: integer
+          description: reconciliation_status == "BREAK" (source-flagged).
+        provisional_variances:
+          type: integer
+          description: Not yet BREAK, but reconciliation_variance_amount is already
+            nonzero -- an early-warning signal.
+      required:
+      - transactions_checked
+      - confirmed_breaks
+      - provisional_variances
+    ReconciliationBreak:
+      type: object
+      description: One detected reconciliation problem. detection_type is CONFIRMED_BREAK
+        (source already called it a break -- not every one carries a nonzero variance_amount,
+        some are flagged for other reasons) or PROVISIONAL_VARIANCE (source hasn't
+        called it a break yet, but the variance is already nonzero).
+      properties:
+        id:
+          type: integer
+        tenant_bank_id:
+          type: string
+        transaction_id:
+          type: string
+        rail_type:
+          type: string
+        detection_type:
+          type: string
+          enum:
+          - CONFIRMED_BREAK
+          - PROVISIONAL_VARIANCE
+        source_reconciliation_status: *id002
+        variance_amount: *id005
+        amount: *id005
+        details: *id003
+        detected_at: *id004
+      required:
+      - id
+      - tenant_bank_id
+      - transaction_id
+      - rail_type
+      - detection_type
+      - detected_at
+    ReconciliationBreakList:
+      type: object
+      properties:
+        total:
+          type: integer
+        breaks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReconciliationBreak'
+      required:
+      - total
+      - breaks
 servers:
 - url: http://localhost:8000
   description: Local dev (uvicorn app.main:app --reload)
@@ -1673,3 +1817,4 @@ tags:
 - name: Operational Issues - Duplicate Payment (Step 6b)
 - name: Operational Issues - Formatting Rejection (Step 6b)
 - name: Operational Issues - Issue Feed (Step 6b)
+- name: Reconciliation (Step 6c)
