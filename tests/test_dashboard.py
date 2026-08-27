@@ -40,6 +40,20 @@ def test_overview_with_no_transactions_has_null_settlement_rate(db_session):
 
     assert result["total_transactions"] == 0
     assert result["settlement_rate"] is None
+    assert result["date_range_start"] is None
+    assert result["date_range_end"] is None
+
+
+def test_overview_computes_real_date_range(db_session):
+    _make_event(db_session, transaction_id="TXN-1", transaction_occurred_at="2026-06-01T10:00:00Z")
+    _make_event(db_session, transaction_id="TXN-2", transaction_occurred_at="2026-08-15T10:00:00Z")
+    _make_event(db_session, transaction_id="TXN-3", transaction_occurred_at="2026-07-01T10:00:00Z")
+    _make_event(db_session, transaction_id="TXN-4", transaction_occurred_at=None)  # must not break MIN/MAX
+
+    result = get_overview(db_session, "KEYBANK")
+
+    assert result["date_range_start"] == "2026-06-01T10:00:00Z"
+    assert result["date_range_end"] == "2026-08-15T10:00:00Z"
 
 
 def test_overview_counts_merchants_and_individuals(db_session):
