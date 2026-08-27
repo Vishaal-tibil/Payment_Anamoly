@@ -23,7 +23,8 @@ are sufficient at this volume.
 | 4 | Merchant/Individual Identity Resolution | ✅ Built |
 | 5 | Feature Store (dashboard/summary features) | ✅ Built |
 | 6a | **Fraud/Anomaly Detection engine — this doc** | 🔨 In progress, 3-way split below |
-| 6b–d | Operational Issues / Reconciliation / Payment Health engines | ⏳ Not started |
+| 6b | **Operational Issues engine — this doc** | 🔨 In progress, see below |
+| 6c–d | Reconciliation / Payment Health engines | ⏳ Not started |
 | 7 | LLM Agent Layer (Mistral) | ⏳ Not started |
 | 8 | Serving API | ⏳ Not started |
 
@@ -335,6 +336,150 @@ looks more confident than it is.
 via `track-d-hdbscan` → PR into `main`.
 
 ---
+
+## Operational Issues engine (Step 6b) — a separate track from the fraud engine above
+
+This is a **different engine from Tracks A–D above**, not another column on
+`EntitySnapshot`. The fraud engine asks "is this behavior unusual" (needs a
+learned baseline — Isolation Forest/HDBSCAN/time-series). Operational Issues
+asks "did the payment pipeline itself work correctly" — for 3 of the 4 issues
+below, the ground truth already sits directly in `CanonicalEvent`'s existing
+columns; only 1 needs any statistics, and it's simple rolling z-score, not ML.
+
+| Issue | Approach | Why |
+|---|---|---|
+| Network/Processor Timeout | **Rolling z-score** (statistical, untrained) | The only one where "is this rate normal" isn't a fact — needs a baseline to compare against. |
+| Batch Never Settles | **Deterministic rule** | `file_reached_settlement` is a literal fact; either it's true or it isn't. No model needed. |
+| Duplicate Payment | **Deterministic match**, exact-key join, no ML | `idempotency_key`/`original_transaction_id` already link a retry to its original — a lookup problem, not a prediction problem. |
+| Formatting Rejection | **Deterministic listing** + rolling z-score for the spike half | `format_validation_status` is a fact; only "is the reject *rate* spiking" needs statistics. |
+
+**Owner**: _TBD — tell me who's picking this up (one person across all four, or
+split by issue across your team) and I'll personalize this section with named
+runbooks the same way Tracks B/C/D above are personalized to Harshitha/Vishaal/
+Shruthi._
+
+### The rule here is the opposite of the fraud engine's — read carefully
+
+Tracks A–D above have a hard rule: never read `network_timeout_flag`,
+`format_validation_status`, etc. as a model input, because those are the
+source's own pre-computed **fraud** risk verdicts and using them would leak
+the answer. **That rule does not apply here.** `network_timeout_flag`,
+`file_reached_settlement`, `duplicate_check_status`, and
+`format_validation_status` are not fraud verdicts being reverse-engineered —
+they're plain operational facts (did the network respond in time, did the
+batch settle, is this a flagged duplicate, did the message pass format
+validation), and reading them directly is the entire point of this engine.
+Don't import the fraud engine's exclusion list into this one by habit.
+
+### Where to get data
+
+Straight from `canonical_events` — no new snapshot table needed for the two
+deterministic issues, and no new aggregation code needed for the two
+rate-based ones:
+
+```python
+from app.database import SessionLocal
+from app.models import CanonicalEvent
+
+db = SessionLocal()
+events = db.query(CanonicalEvent).filter(
+    CanonicalEvent.tenant_bank_id == "MERIDIAN_TRUST_BANK",
+).all()
+```
+
+For the two rolling-z-score issues, **reuse Track A's existing per-week rates
+instead of re-aggregating from scratch** — `EntitySnapshot.timeout_ratio` and
+`EntitySnapshot.format_reject_ratio` (`app/anomaly/models.py`) are already
+computed per merchant per week. Read them (never write to that table — it's
+the fraud engine's output contract, see above); z-score each merchant's
+current week against that same merchant's prior weeks, the same core
+algorithm as Track C's `_score_sequence()` in `app/anomaly/timeseries.py` —
+worth importing/reusing rather than reimplementing.
+
+### Output contract: a new table, `OperationalIssue`
+
+One flat table, one row per detected issue instance — keeps all four issue
+types queryable from one place for whoever builds the Step 8 serving API
+later, even though they're detected by different logic:
+
+```python
+# app/operations/models.py
+class OperationalIssue(Base):
+    __tablename__ = "operational_issues"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    issue_type = Column(String, nullable=False, index=True)
+    # "NETWORK_TIMEOUT_SPIKE" | "BATCH_NOT_SETTLED" | "DUPLICATE_PAYMENT" | "FORMAT_REJECTION_SPIKE"
+
+    tenant_bank_id = Column(String, nullable=False, index=True)
+    reference_type = Column(String, nullable=False)  # "TRANSACTION" | "BATCH" | "PARTY"
+    reference_id = Column(String, nullable=False, index=True)
+    # transaction_id for duplicates, batch_id for stuck batches, party_id for rate spikes
+
+    window_start = Column(DateTime(timezone=True), nullable=True)  # rate-based issues only
+    window_end = Column(DateTime(timezone=True), nullable=True)
+
+    severity_score = Column(Float, nullable=True)  # 0-100 for the two z-score issues; null for the two deterministic ones (they're binary, not scored)
+    details = Column(JSON, nullable=True)  # e.g. {"expected_settlement_at": ..., "days_overdue": 4} or {"duplicate_of": "TXN-123", "amount_delta": 0.0}
+
+    detected_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+```
+
+### Process
+
+1. `git checkout main && git pull && git checkout -b operational-issues` (or
+   `operational-issues-<your-name>` if you're splitting the four issues across
+   people — check with the group first so two people don't grab the same one).
+2. New subpackage `app/operations/` (sibling to `app/anomaly/`, same pattern):
+   `models.py` (the table above), then one module per detection approach —
+   e.g. `rules.py` for the two deterministic checks, `drift.py` for the two
+   z-score checks. Each a plain function returning a summary dict, same shape
+   as `resolve_parties()`/`compute_snapshots()`/`score_drift()`.
+3. **Batch Never Settles**: group `canonical_events` where `batch_id` is not
+   null by `batch_id`; flag a batch where `expected_settlement_at` has passed
+   (compare to now) and `file_reached_settlement` isn't `True`.
+4. **Duplicate Payment**: group by `idempotency_key` (and separately by
+   `original_transaction_id` where `is_retry=True`) where not null; flag a
+   group where more than one row reached a settled/completed `status` — a
+   genuine retry should only have one winner.
+5. **Network/Processor Timeout** and **Formatting Rejection** (spike half):
+   per merchant, per week, z-score `timeout_ratio`/`format_reject_ratio`
+   against that merchant's own prior weeks (≥2 prior weeks needed, same
+   floor Track C uses). Rescale to 0–100, write as `severity_score`.
+   **Formatting Rejection** (listing half): a plain filter over
+   `canonical_events` for `format_validation_status` indicating a reject —
+   no scoring, just list them; still worth a row in `OperationalIssue` per
+   rejected transaction so it shows up in the same feed as everything else.
+6. Tests in `tests/test_operational_issues.py`: synthetic fixtures per issue
+   type (a batch that's overdue vs. one that's on time; a real duplicate vs.
+   a legitimate single retry; a stable timeout rate vs. a spike) — same
+   pattern as `tests/test_timeseries.py`. Plus a real-data run against
+   `data/payments.db` reporting how many of each issue type actually show up.
+7. `pytest -q` — must stay green (56 existing + yours).
+8. Add whatever endpoints make sense following `app/main.py`'s existing
+   pattern (a `POST /operations/issues/compute` to run detection, a
+   `GET /operations/issues?tenant_bank_id=...&issue_type=...` to list) —
+   same request/response shape as the `/anomaly/*` endpoints, and regenerate
+   `docs/openapi.json` (`python -m scripts.generate_openapi`) once they're in.
+9. Commit, push your branch, open a PR into `main`. In the description: how
+   many of each issue type were found in the real Meridian data, and 1–2
+   concrete examples per issue type.
+
+**Where to push**: new table `operational_issues`, via your branch → PR into
+`main` — same merge pattern as Tracks B/C/D (branch off `main`, verify tests
+green on a clean DB reset, restore real data, push, PR).
+
+### How this fits into the complete pipeline
+
+Steps 6a (fraud/anomaly) and 6b (this) are independent engines that both read
+`canonical_events`/`EntitySnapshot` and both write their own output table —
+neither blocks the other, and there's no shared column to coordinate on (unlike
+Tracks B/C/D, which do share `EntitySnapshot`). Once both are far enough along,
+Step 7 (the LLM agent layer) and Step 8 (the serving API) read from *both*
+`EntitySnapshot`/`BeneficiarySnapshot` (fraud) and `OperationalIssue`
+(operational) to produce one combined per-merchant/per-individual picture —
+that integration is the next milestone after both engines have real output to
+combine, not something either engine needs to anticipate in its own code now.
 
 ## Shared workflow (everyone)
 
