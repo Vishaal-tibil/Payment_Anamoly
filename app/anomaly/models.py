@@ -52,6 +52,7 @@ class EntitySnapshot(Base):
     unique_counterparties = Column(Integer, nullable=True)
     new_counterparty_ratio = Column(Float, nullable=True)
     retry_ratio = Column(Float, nullable=True)
+    near_threshold_ratio = Column(Float, nullable=True)  # fraction of amounts sitting just under a reporting threshold (structuring signal)
 
     avg_response_time_ms = Column(Float, nullable=True)
     timeout_ratio = Column(Float, nullable=True)  # response_time_ms > expected_response_sla_ms, computed by us
@@ -77,3 +78,47 @@ class EntitySnapshot(Base):
 
     final_anomaly_score = Column(Float, nullable=True)  # 0-100, aggregation step only
     anomaly_band = Column(String, nullable=True)  # Normal / Low-Medium / High / Critical, aggregation step only
+
+
+class BeneficiarySnapshot(Base):
+    """Fraud category: Funnel Account. Beneficiary-centric aggregation,
+    mirroring EntitySnapshot's shape but grouped by payee identity instead
+    of by resolved sender party -- needed because "multiple senders
+    suddenly paying the same beneficiary" is a property of the
+    counterparty, not of any single sender's own behavioral profile.
+    EntitySnapshot can't represent this no matter how it's windowed, since
+    it's keyed on the sender side.
+
+    v1: one to-date row per beneficiary (same reasoning EntitySnapshot
+    uses for individuals -- most beneficiaries in pilot-scale data have
+    too few incoming payments for weekly windowing to mean anything).
+    funnel_flag/funnel_reason come from a simple threshold rule (Section 7:
+    "before ML"), not a trained model -- an ML-scored version would mean
+    training a third segment-model on these rows, separate future scope.
+
+    beneficiary_key is payee_name (falling back to payee_account_ref when
+    name is absent), the only counterparty identifier consistent across
+    every rail in this schema -- Card/Cheque never expose a resolved
+    individual_id on the payee side.
+    """
+
+    __tablename__ = "anomaly_beneficiary_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    beneficiary_key = Column(String, nullable=False, index=True)
+    tenant_bank_id = Column(String, nullable=False, index=True)
+
+    window_end = Column(DateTime(timezone=True), nullable=False)
+    transaction_count = Column(Integer, nullable=False, default=0)
+    distinct_senders = Column(Integer, nullable=False, default=0)
+    # Senders whose first-ever payment to this beneficiary falls within
+    # the recent window (see funnel.py's _RECENT_WINDOW) -- a genuine
+    # "sudden new senders" signal even without full weekly windowing.
+    new_sender_count = Column(Integer, nullable=False, default=0)
+    new_sender_ratio = Column(Float, nullable=True)
+    amount_total = Column(Float, nullable=True)
+
+    funnel_flag = Column(Boolean, nullable=False, default=False)
+    funnel_reason = Column(String, nullable=True)
+
+    computed_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)

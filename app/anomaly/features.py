@@ -144,6 +144,28 @@ def _retry_ratio(events: list[CanonicalEvent]) -> float | None:
     return sum(1 for v in applicable if v) / len(applicable)
 
 
+# Common US BSA reporting thresholds (CTR at $10,000, monetary instrument
+# recordkeeping at $3,000) -- structuring is characteristically transactions
+# kept just under one of these, not over it.
+_REPORTING_THRESHOLDS = (10_000.0, 3_000.0)
+# "Just under" = the top 10% of the threshold's range (e.g. $9,000-$9,999.99
+# counts as near $10,000; $1,000 does not).
+_NEAR_THRESHOLD_LOWER_BOUND_RATIO = 0.9
+
+
+def _near_threshold_ratio(amounts: list[float]) -> float | None:
+    """Fraction of this entity's transactions sitting just under a known
+    reporting threshold -- a raw, purely arithmetic amount-distribution
+    fact (Section 5's "amount distribution" feature for Structuring), not
+    a judgment call, so it's as leakage-free as amount_avg/amount_std.
+    """
+    if not amounts:
+        return None
+    def _is_near(amount: float) -> bool:
+        return any(t * _NEAR_THRESHOLD_LOWER_BOUND_RATIO <= amount < t for t in _REPORTING_THRESHOLDS)
+    return sum(1 for a in amounts if _is_near(a)) / len(amounts)
+
+
 def _build_snapshot(
     party_id: str,
     party_type: str,
@@ -177,6 +199,7 @@ def _build_snapshot(
         unique_counterparties=len(counterparties) if counterparties else None,
         new_counterparty_ratio=_new_counterparty_ratio(events),
         retry_ratio=_retry_ratio(events),
+        near_threshold_ratio=_near_threshold_ratio(amounts),
         avg_response_time_ms=avg_rt,
         timeout_ratio=timeout_ratio,
         format_reject_ratio=_format_reject_ratio(events),

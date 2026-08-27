@@ -92,7 +92,7 @@ def test_snapshot_values_are_unaffected_by_the_flags_it_must_not_use(db_session)
     flagged = db_session.query(EntitySnapshot).filter_by(party_id="MER-FLAGGED").one()
     for field in (
         "transaction_count", "amount_total", "amount_avg", "amount_median", "amount_std",
-        "unique_counterparties", "new_counterparty_ratio", "retry_ratio",
+        "unique_counterparties", "new_counterparty_ratio", "retry_ratio", "near_threshold_ratio",
         "avg_response_time_ms", "timeout_ratio", "format_reject_ratio",
     ):
         assert getattr(clean, field) == getattr(flagged, field), f"{field} differs -- possible leakage"
@@ -113,6 +113,18 @@ def test_recompute_replaces_not_duplicates(db_session):
     compute_snapshots(db_session)
 
     assert db_session.query(EntitySnapshot).filter_by(party_id="MER-1").count() == 1
+
+
+def test_near_threshold_ratio_flags_amounts_just_under_reporting_thresholds(db_session):
+    _make_event(db_session, transaction_id="TXN-1", amount=9_500.00)   # just under $10,000 -- near
+    _make_event(db_session, transaction_id="TXN-2", amount=2_950.00)   # just under $3,000 -- near
+    _make_event(db_session, transaction_id="TXN-3", amount=100.00)     # nowhere near either -- not near
+    _make_event(db_session, transaction_id="TXN-4", amount=10_000.00)  # at, not under, the threshold -- not near
+
+    compute_snapshots(db_session)
+
+    snapshot = db_session.query(EntitySnapshot).filter_by(party_id="MER-1").one()
+    assert abs(snapshot.near_threshold_ratio - (2 / 4)) < 1e-9
 
 
 def test_timeout_and_retry_ratios_from_raw_fields(db_session):
