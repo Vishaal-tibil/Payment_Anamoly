@@ -20,6 +20,10 @@ from .database import Base, SessionLocal, engine, get_db
 from .feature_store import compute_features
 from .ingestion import process_file
 from .models import CanonicalEvent, Individual, Merchant, PartyFeatures
+from .operations import models as operations_models  # noqa: F401  -- registers operational_issues
+from .operations.duplicate_payment import detect_duplicate_payments
+from .operations.format_rejection import list_format_rejections, score_format_rejection_drift
+from .operations.models import OperationalIssue
 from .resolution import resolve_parties
 from .seed import seed_sample_mappings_if_empty
 
@@ -498,4 +502,86 @@ async def list_beneficiary_snapshots(
     return {
         "total": total,
         "snapshots": [_beneficiary_snapshot_summary(s) for s in rows],
+    }
+
+
+# --- Operational Issues engine (Step 6b) ---
+# A separate engine from the fraud/anomaly one above -- writes to its own
+# operational_issues table, never to EntitySnapshot/BeneficiarySnapshot.
+# Reading the source's pre-computed operational flags directly (e.g.
+# format_validation_status) is fine here, unlike the fraud engine's rule
+# against reading its pre-computed risk flags -- see README.
+
+class DetectDuplicatePaymentsRequest(BaseModel):
+    tenant_bank_id: str | None = None
+
+
+@app.post("/operations/duplicate-payments/compute")
+async def detect_duplicate_payments_endpoint(
+    body: DetectDuplicatePaymentsRequest = DetectDuplicatePaymentsRequest(),
+    db: Session = Depends(get_db),
+):
+    return detect_duplicate_payments(db, tenant_bank_id=body.tenant_bank_id)
+
+
+class ListFormatRejectionsRequest(BaseModel):
+    tenant_bank_id: str | None = None
+
+
+@app.post("/operations/format-rejections/compute")
+async def list_format_rejections_endpoint(
+    body: ListFormatRejectionsRequest = ListFormatRejectionsRequest(),
+    db: Session = Depends(get_db),
+):
+    return list_format_rejections(db, tenant_bank_id=body.tenant_bank_id)
+
+
+class ScoreFormatRejectionDriftRequest(BaseModel):
+    tenant_bank_id: str | None = None
+
+
+@app.post("/operations/format-rejections/spikes/compute")
+async def score_format_rejection_drift_endpoint(
+    body: ScoreFormatRejectionDriftRequest = ScoreFormatRejectionDriftRequest(),
+    db: Session = Depends(get_db),
+):
+    return score_format_rejection_drift(db, tenant_bank_id=body.tenant_bank_id)
+
+
+def _operational_issue_summary(issue: OperationalIssue) -> dict:
+    return {
+        "id": issue.id,
+        "issue_type": issue.issue_type,
+        "tenant_bank_id": issue.tenant_bank_id,
+        "reference_type": issue.reference_type,
+        "reference_id": issue.reference_id,
+        "window_start": issue.window_start,
+        "window_end": issue.window_end,
+        "severity_score": issue.severity_score,
+        "details": issue.details,
+        "detected_at": issue.detected_at,
+    }
+
+
+@app.get("/operations/issues")
+async def list_operational_issues(
+    tenant_bank_id: str,
+    issue_type: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    base_query = db.query(OperationalIssue).filter(OperationalIssue.tenant_bank_id == tenant_bank_id)
+    if issue_type:
+        base_query = base_query.filter(OperationalIssue.issue_type == issue_type.upper())
+    total = base_query.count()
+    rows = (
+        base_query.order_by(OperationalIssue.detected_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return {
+        "total": total,
+        "issues": [_operational_issue_summary(i) for i in rows],
     }

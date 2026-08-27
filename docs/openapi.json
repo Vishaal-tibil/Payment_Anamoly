@@ -3,7 +3,7 @@
   "info": {
     "title": "Merchant Payment Intelligence - Ingestion Foundation",
     "version": "0.1.0",
-    "description": "Merchant Payment Intelligence Platform -- backend API for the frontend team.\n\nCovers Steps 1-5 (ingestion, identity resolution, feature store) plus the complete Fraud/Anomaly Detection engine (Step 6a): Track A (behavioral snapshots), Track B (Isolation Forest), Track C (time-series drift, including Funnel Account detection), Track D (HDBSCAN clustering), and the Section 8 final aggregation that combines all three model tracks into one final_anomaly_score/anomaly_band per entity.\n\nAll `/anomaly/*/compute` and `/resolve/parties` and `/features/compute` endpoints are POST, take an optional `{\"tenant_bank_id\": null}` body (omit or null = all tenants), and return a run-summary object, not the computed rows themselves -- fetch those via the matching GET endpoint. Run them in dependency order for a fresh tenant: snapshots/compute -> isolation-forest/train + timeseries/compute + clustering/compute (any order) -> final-score/compute.",
+    "description": "Merchant Payment Intelligence Platform -- backend API for the frontend team.\n\nCovers Steps 1-5 (ingestion, identity resolution, feature store), the complete Fraud/Anomaly Detection engine (Step 6a): Track A (behavioral snapshots), Track B (Isolation Forest), Track C (time-series drift, including Funnel Account detection), Track D (HDBSCAN clustering), and the Section 8 final aggregation that combines all three model tracks into one final_anomaly_score/anomaly_band per entity -- plus two of the four Operational Issues engine (Step 6b) detectors: Duplicate Payment and Formatting Rejection. The other two (Network/Processor Timeout, Batch Never Settles) are being built separately and aren't reflected here yet.\n\nAll `/anomaly/*/compute` and `/resolve/parties` and `/features/compute` endpoints are POST, take an optional `{\"tenant_bank_id\": null}` body (omit or null = all tenants), and return a run-summary object, not the computed rows themselves -- fetch those via the matching GET endpoint. Run them in dependency order for a fresh tenant: snapshots/compute -> isolation-forest/train + timeseries/compute + clustering/compute (any order) -> final-score/compute.",
     "contact": {
       "name": "Vishaal",
       "email": "vishaal.g@tibilsolutions.com"
@@ -978,6 +978,207 @@
           "Anomaly Detection - Funnel Account (Track A input + Track C)"
         ]
       }
+    },
+    "/operations/duplicate-payments/compute": {
+      "post": {
+        "summary": "Detect Duplicate Payments Endpoint",
+        "operationId": "detect_duplicate_payments_endpoint_operations_duplicate_payments_compute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DetectDuplicatePaymentsRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Duplicate-payment detection run completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DetectDuplicatePaymentsResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Operational Issues - Duplicate Payment (Step 6b)"
+        ]
+      }
+    },
+    "/operations/format-rejections/compute": {
+      "post": {
+        "summary": "List Format Rejections Endpoint",
+        "operationId": "list_format_rejections_endpoint_operations_format_rejections_compute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListFormatRejectionsRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Format-rejection listing run completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListFormatRejectionsResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Operational Issues - Formatting Rejection (Step 6b)"
+        ]
+      }
+    },
+    "/operations/format-rejections/spikes/compute": {
+      "post": {
+        "summary": "Score Format Rejection Drift Endpoint",
+        "operationId": "score_format_rejection_drift_endpoint_operations_format_rejections_spikes_compute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScoreFormatRejectionDriftRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Format-rejection rate drift scoring run completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScoreFormatRejectionDriftResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Operational Issues - Formatting Rejection (Step 6b)"
+        ]
+      }
+    },
+    "/operations/issues": {
+      "get": {
+        "summary": "List Operational Issues",
+        "operationId": "list_operational_issues_operations_issues_get",
+        "parameters": [
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          },
+          {
+            "name": "issue_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Issue Type"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page of detected operational issues, most recent first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationalIssueList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Operational Issues - Issue Feed (Step 6b)"
+        ]
+      }
     }
   },
   "components": {
@@ -1095,6 +1296,23 @@
         "type": "object",
         "title": "ComputeSnapshotsRequest"
       },
+      "DetectDuplicatePaymentsRequest": {
+        "properties": {
+          "tenant_bank_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant Bank Id"
+          }
+        },
+        "type": "object",
+        "title": "DetectDuplicatePaymentsRequest"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1107,6 +1325,23 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "ListFormatRejectionsRequest": {
+        "properties": {
+          "tenant_bank_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant Bank Id"
+          }
+        },
+        "type": "object",
+        "title": "ListFormatRejectionsRequest"
       },
       "ResolvePartiesRequest": {
         "properties": {
@@ -1141,6 +1376,23 @@
         },
         "type": "object",
         "title": "ScoreDriftRequest"
+      },
+      "ScoreFormatRejectionDriftRequest": {
+        "properties": {
+          "tenant_bank_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant Bank Id"
+          }
+        },
+        "type": "object",
+        "title": "ScoreFormatRejectionDriftRequest"
       },
       "ScoreFunnelDriftRequest": {
         "properties": {
@@ -2308,6 +2560,137 @@
           "rows_scored",
           "band_counts"
         ]
+      },
+      "DetectDuplicatePaymentsResult": {
+        "type": "object",
+        "description": "Returned by POST /operations/duplicate-payments/compute.",
+        "properties": {
+          "groups_checked": {
+            "type": "integer",
+            "description": "Idempotency-key/retry-link groups with more than one transaction."
+          },
+          "duplicate_payments_flagged": {
+            "type": "integer",
+            "description": "Of those groups, how many had 2+ transactions reach SETTLED."
+          }
+        },
+        "required": [
+          "groups_checked",
+          "duplicate_payments_flagged"
+        ]
+      },
+      "ListFormatRejectionsResult": {
+        "type": "object",
+        "description": "Returned by POST /operations/format-rejections/compute.",
+        "properties": {
+          "rejections_listed": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rejections_listed"
+        ]
+      },
+      "ScoreFormatRejectionDriftResult": {
+        "type": "object",
+        "description": "Returned by POST /operations/format-rejections/spikes/compute.",
+        "properties": {
+          "weeks_scored": {
+            "type": "integer",
+            "description": "Merchant-weeks with enough prior history to score at all."
+          },
+          "spikes_flagged": {
+            "type": "integer",
+            "description": "Of those, how many scored >= 60 (meaningfully elevated, not just scored)."
+          }
+        },
+        "required": [
+          "weeks_scored",
+          "spikes_flagged"
+        ]
+      },
+      "OperationalIssue": {
+        "type": "object",
+        "description": "One detected operational issue instance. issue_type is one of DUPLICATE_PAYMENT, FORMAT_REJECTION, FORMAT_REJECTION_SPIKE today (NETWORK_TIMEOUT_SPIKE, BATCH_NOT_SETTLED pending another track). severity_score is null for the two deterministic types (binary, not scored) and 0-100 for FORMAT_REJECTION_SPIKE.",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "issue_type": {
+            "type": "string",
+            "enum": [
+              "DUPLICATE_PAYMENT",
+              "FORMAT_REJECTION",
+              "FORMAT_REJECTION_SPIKE",
+              "NETWORK_TIMEOUT_SPIKE",
+              "BATCH_NOT_SETTLED"
+            ]
+          },
+          "tenant_bank_id": {
+            "type": "string"
+          },
+          "reference_type": {
+            "type": "string",
+            "enum": [
+              "TRANSACTION",
+              "BATCH",
+              "PARTY"
+            ]
+          },
+          "reference_id": {
+            "type": "string",
+            "description": "transaction_id, batch_id, or party_id depending on reference_type."
+          },
+          "window_start": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "window_end": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "severity_score": {
+            "type": "number",
+            "nullable": true
+          },
+          "details": {
+            "type": "object",
+            "nullable": true,
+            "additionalProperties": true
+          },
+          "detected_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "issue_type",
+          "tenant_bank_id",
+          "reference_type",
+          "reference_id",
+          "detected_at"
+        ]
+      },
+      "OperationalIssueList": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer"
+          },
+          "issues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OperationalIssue"
+            }
+          }
+        },
+        "required": [
+          "total",
+          "issues"
+        ]
       }
     }
   },
@@ -2344,6 +2727,15 @@
     },
     {
       "name": "Anomaly Detection - Final Aggregation (Section 8)"
+    },
+    {
+      "name": "Operational Issues - Duplicate Payment (Step 6b)"
+    },
+    {
+      "name": "Operational Issues - Formatting Rejection (Step 6b)"
+    },
+    {
+      "name": "Operational Issues - Issue Feed (Step 6b)"
     }
   ]
 }

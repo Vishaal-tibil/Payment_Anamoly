@@ -23,7 +23,7 @@ are sufficient at this volume.
 | 4 | Merchant/Individual Identity Resolution | ✅ Built |
 | 5 | Feature Store (dashboard/summary features) | ✅ Built |
 | 6a | **Fraud/Anomaly Detection engine — this doc** | ✅ Built — Tracks A–D + final aggregation all merged |
-| 6b | **Operational Issues engine — this doc** | 🔨 In progress, see below |
+| 6b | **Operational Issues engine — this doc** | 🔨 2/4 issues built (Duplicate Payment, Formatting Rejection), see below |
 | 6c–d | Reconciliation / Payment Health engines | ⏳ Not started |
 | 7 | LLM Agent Layer (Mistral) | ⏳ Not started |
 | 8 | Serving API | ⏳ Not started |
@@ -103,13 +103,16 @@ uvicorn app.main:app --reload   # optional — starts the API if you'd rather hi
 
 `data/payments.db` is committed to this repo **with real data already loaded**:
 Meridian Trust Bank, 1,020 transactions, resolved into 10 merchants + 91
-individuals (Step 4), Step 5 dashboard features computed, and the fraud engine's
+individuals (Step 4), Step 5 dashboard features computed, the fraud engine's
 full output already populated — Track A snapshots (83 merchant weekly rows + 91
 individual to-date rows), `isolation_forest_score`, `cluster_id`/`cluster_changed`,
 `timeseries_drift_score`/`funnel_drift_score`, and `final_anomaly_score`/
-`anomaly_band` (174 rows scored: 98 Normal, 68 Low-Medium, 6 High, 2 Critical).
-You do not need to run any ingestion or scoring pipeline — just pull `main` and
-start querying `EntitySnapshot`.
+`anomaly_band` (174 rows scored: 98 Normal, 68 Low-Medium, 6 High, 2 Critical) —
+and Operational Issues' Duplicate Payment + Formatting Rejection output (20
+retry-linked groups checked, 18 flagged; 19 format rejections listed; 63
+merchant-weeks scored for reject-rate drift, 7 flagged as spikes). You do not
+need to run any ingestion or scoring pipeline — just pull `main` and start
+querying `EntitySnapshot` / `OperationalIssue`.
 
 **Expect exactly 2 failures, not 0**, the first time you run `pytest -q` against
 this committed real data: `test_ingest_sample_pre_then_post_merges_into_one_row`
@@ -117,10 +120,12 @@ and `test_ingest_card_then_resolve_then_list_merchants` in
 `test_api_integration.py`. Both are KEYBANK-demo tests that assume a clean DB;
 the committed real data already has KEYBANK rows pre-resolved from the initial
 commit, so a fresh upload in those tests doesn't create what the test expects.
-Confirmed benign every time by resetting to a clean DB (`rm data/payments.db`,
-recreate tables, `pytest -q`) — full suite goes green. Not something to "fix"
-by touching the committed data; just expected noise from two tests and real
-data coexisting in the same file-backed DB.
+Confirmed benign — resetting to a clean DB (`rm data/payments.db`, recreate
+tables, `pytest -q`) makes those 2 pass, but trades them for a *different*
+1 expected failure (`test_train_endpoint_scores_real_meridian_data`, which
+needs the real data that's no longer there). There is no state where the full
+suite is 100% green at once — that's expected, not something to "fix" by
+touching the committed data or the tests.
 
 If you ever do need to regenerate it from scratch (e.g. after a mapping-config
 fix upstream), tables first (a fresh DB only registers the tables modules that
@@ -185,14 +190,19 @@ correctly.
   `compute_features()`), callable standalone or via an endpoint, that reads
   `canonical_events` and writes a derived table. Your track's module should look
   like these.
-- `app/anomaly/` — the fraud/anomaly engine's own subpackage. `models.py` has
-  `EntitySnapshot` (the shared table); `features.py` is Track A (already built —
-  read its module docstring, it explains the leakage rule in full). Your new file
-  goes here too.
-- `unsupervised-anomaly-detection-knowledge.md` (repo root) — the design doc this
-  engine follows: profile-based, unsupervised, Isolation Forest + HDBSCAN +
-  time-series, scored 0–100 per entity. **Read this in full before writing any
-  model code** — every track section below assumes you have.
+- `app/anomaly/` — the fraud/anomaly engine's own subpackage (Step 6a, complete).
+  `models.py` has `EntitySnapshot`/`BeneficiarySnapshot`; `features.py` is Track A
+  (read its module docstring, it explains the leakage rule in full).
+- `app/operations/` — the Operational Issues engine's own subpackage (Step 6b, in
+  progress). `models.py` has `OperationalIssue`; `duplicate_payment.py` and
+  `format_rejection.py` are built. If you're adding Network/Processor Timeout or
+  Batch Never Settles, your new file goes here too — see that section below.
+- `unsupervised-anomaly-detection-knowledge.md` (repo root) — the design doc the
+  fraud/anomaly engine follows: profile-based, unsupervised, Isolation Forest +
+  HDBSCAN + time-series, scored 0–100 per entity. **Read this in full before
+  writing any model code** — every Track B/C/D section below assumes you have.
+  Operational Issues is deliberately NOT built off this doc (it's rule/fact-based,
+  not model-based) — see its own section for why.
 
 ## A known constraint — read before choosing your approach
 
@@ -425,17 +435,18 @@ asks "did the payment pipeline itself work correctly" — for 3 of the 4 issues
 below, the ground truth already sits directly in `CanonicalEvent`'s existing
 columns; only 1 needs any statistics, and it's simple rolling z-score, not ML.
 
-| Issue | Approach | Why |
-|---|---|---|
-| Network/Processor Timeout | **Rolling z-score** (statistical, untrained) | The only one where "is this rate normal" isn't a fact — needs a baseline to compare against. |
-| Batch Never Settles | **Deterministic rule** | `file_reached_settlement` is a literal fact; either it's true or it isn't. No model needed. |
-| Duplicate Payment | **Deterministic match**, exact-key join, no ML | `idempotency_key`/`original_transaction_id` already link a retry to its original — a lookup problem, not a prediction problem. |
-| Formatting Rejection | **Deterministic listing** + rolling z-score for the spike half | `format_validation_status` is a fact; only "is the reject *rate* spiking" needs statistics. |
+| Issue | Approach | Why | Status |
+|---|---|---|---|
+| Network/Processor Timeout | **Rolling z-score** (statistical, untrained) | The only one where "is this rate normal" isn't a fact — needs a baseline to compare against. | ⏳ In progress on another branch |
+| Batch Never Settles | **Deterministic rule** | `file_reached_settlement` is a literal fact; either it's true or it isn't. No model needed. | ⏳ In progress on another branch |
+| Duplicate Payment | **Deterministic match**, exact-key join, no ML | `idempotency_key`/`original_transaction_id` already link a retry to its original — a lookup problem, not a prediction problem. | ✅ Built — `app/operations/duplicate_payment.py` |
+| Formatting Rejection | **Deterministic listing** + rolling z-score for the spike half | `format_validation_status` is a fact; only "is the reject *rate* spiking" needs statistics. | ✅ Built — `app/operations/format_rejection.py` |
 
-**Owner**: _TBD — tell me who's picking this up (one person across all four, or
-split by issue across your team) and I'll personalize this section with named
-runbooks the same way Tracks B/C/D above are personalized to Harshitha/Vishaal/
-Shruthi._
+**Owner**: Duplicate Payment and Formatting Rejection built by Vishaal. Network/
+Processor Timeout and Batch Never Settles are being built by another teammate on
+a separate branch, not yet pushed as of this doc — **read the note right below
+before starting that branch**, since `app/operations/models.py` and the
+`OperationalIssue` table already exist on `main` now.
 
 ### The rule here is the opposite of the fraud engine's — read carefully
 
@@ -475,11 +486,18 @@ current week against that same merchant's prior weeks, the same core
 algorithm as Track C's `_score_sequence()` in `app/anomaly/timeseries.py` —
 worth importing/reusing rather than reimplementing.
 
-### Output contract: a new table, `OperationalIssue`
+### Output contract: `OperationalIssue` (`app/operations/models.py`) — already built, pull `main`
 
 One flat table, one row per detected issue instance — keeps all four issue
 types queryable from one place for whoever builds the Step 8 serving API
-later, even though they're detected by different logic:
+later, even though they're detected by different logic. **This already
+exists on `main`** (built alongside Duplicate Payment/Formatting Rejection)
+— if you're building Network/Processor Timeout or Batch Never Settles,
+branch off latest `main` and use this table as-is; don't redefine it. This
+is exactly the mistake that cost real rework on Tracks B/D (both branched
+before a shared table existed yet and each independently invented their own
+version) — see that reconciliation note further up for what it looked like
+when it happened.
 
 ```python
 # app/operations/models.py
@@ -488,65 +506,84 @@ class OperationalIssue(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     issue_type = Column(String, nullable=False, index=True)
-    # "NETWORK_TIMEOUT_SPIKE" | "BATCH_NOT_SETTLED" | "DUPLICATE_PAYMENT" | "FORMAT_REJECTION_SPIKE"
+    # "DUPLICATE_PAYMENT" | "FORMAT_REJECTION" | "FORMAT_REJECTION_SPIKE" (built) --
+    # "NETWORK_TIMEOUT_SPIKE" | "BATCH_NOT_SETTLED" (yours to add)
 
     tenant_bank_id = Column(String, nullable=False, index=True)
     reference_type = Column(String, nullable=False)  # "TRANSACTION" | "BATCH" | "PARTY"
     reference_id = Column(String, nullable=False, index=True)
-    # transaction_id for duplicates, batch_id for stuck batches, party_id for rate spikes
+    # transaction_id for duplicates/format rejections, batch_id for stuck batches, party_id for rate spikes
 
     window_start = Column(DateTime(timezone=True), nullable=True)  # rate-based issues only
     window_end = Column(DateTime(timezone=True), nullable=True)
 
-    severity_score = Column(Float, nullable=True)  # 0-100 for the two z-score issues; null for the two deterministic ones (they're binary, not scored)
-    details = Column(JSON, nullable=True)  # e.g. {"expected_settlement_at": ..., "days_overdue": 4} or {"duplicate_of": "TXN-123", "amount_delta": 0.0}
+    severity_score = Column(Float, nullable=True)  # 0-100 for the z-score issues; null for the deterministic ones (they're binary, not scored)
+    details = Column(JSON, nullable=True)  # e.g. {"expected_settlement_at": ..., "days_overdue": 4} or {"settled_transaction_ids": [...]}
 
     detected_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
 ```
 
-### Process
+**What's built and validated against real Meridian data:**
+- `detect_duplicate_payments()` (`app/operations/duplicate_payment.py`) — groups
+  by `idempotency_key`, with a fallback join on `original_transaction_id` for
+  retries that don't share a key. Real result: 20 retry-linked groups, **18
+  flagged** as genuine duplicates (both the original and the retry reached
+  `SETTLED`) — confirmed by eyeballing the raw rows before writing the rule, not
+  assumed.
+- `list_format_rejections()` — deterministic listing of every `FAILED`
+  `format_validation_status` row. Real result: **19 rejections listed**.
+- `score_format_rejection_drift()` — reuses `EntitySnapshot.format_reject_ratio`
+  (Track A) and Track C's `_score_sequence()` z-score core, scoped to a single
+  feature. Only writes a row once a merchant-week's score crosses **60**
+  (documented in code — most weeks are a flat 0.0, so writing a row for every
+  computed week would flood the table with non-issues). Real result: 63
+  merchant-weeks scored, **7 flagged** as spikes.
+- Endpoints: `POST /operations/duplicate-payments/compute`,
+  `POST /operations/format-rejections/compute`,
+  `POST /operations/format-rejections/spikes/compute`,
+  `GET /operations/issues?tenant_bank_id=...&issue_type=...` (filterable,
+  paginated, most-recent-first). All in `docs/openapi.json`.
+- Tests: `tests/test_duplicate_payment.py`, `tests/test_format_rejection.py`.
 
-1. `git checkout main && git pull && git checkout -b operational-issues` (or
-   `operational-issues-<your-name>` if you're splitting the four issues across
-   people — check with the group first so two people don't grab the same one).
-2. New subpackage `app/operations/` (sibling to `app/anomaly/`, same pattern):
-   `models.py` (the table above), then one module per detection approach —
-   e.g. `rules.py` for the two deterministic checks, `drift.py` for the two
-   z-score checks. Each a plain function returning a summary dict, same shape
-   as `resolve_parties()`/`compute_snapshots()`/`score_drift()`.
-3. **Batch Never Settles**: group `canonical_events` where `batch_id` is not
+### Process — for whoever's building Network/Processor Timeout + Batch Never Settles
+
+1. `git checkout main && git pull && git checkout -b operational-issues-<your-name>`
+   — pull first. `app/operations/models.py`, `duplicate_payment.py`, and
+   `format_rejection.py` are already on `main`; you're adding two new files
+   alongside them (e.g. `app/operations/timeout.py`, `app/operations/batch_settlement.py`),
+   not recreating the package.
+2. **Batch Never Settles**: group `canonical_events` where `batch_id` is not
    null by `batch_id`; flag a batch where `expected_settlement_at` has passed
-   (compare to now) and `file_reached_settlement` isn't `True`.
-4. **Duplicate Payment**: group by `idempotency_key` (and separately by
-   `original_transaction_id` where `is_retry=True`) where not null; flag a
-   group where more than one row reached a settled/completed `status` — a
-   genuine retry should only have one winner.
-5. **Network/Processor Timeout** and **Formatting Rejection** (spike half):
-   per merchant, per week, z-score `timeout_ratio`/`format_reject_ratio`
-   against that merchant's own prior weeks (≥2 prior weeks needed, same
-   floor Track C uses). Rescale to 0–100, write as `severity_score`.
-   **Formatting Rejection** (listing half): a plain filter over
-   `canonical_events` for `format_validation_status` indicating a reject —
-   no scoring, just list them; still worth a row in `OperationalIssue` per
-   rejected transaction so it shows up in the same feed as everything else.
-6. Tests in `tests/test_operational_issues.py`: synthetic fixtures per issue
-   type (a batch that's overdue vs. one that's on time; a real duplicate vs.
-   a legitimate single retry; a stable timeout rate vs. a spike) — same
-   pattern as `tests/test_timeseries.py`. Plus a real-data run against
-   `data/payments.db` reporting how many of each issue type actually show up.
-7. `pytest -q` — must stay green (56 existing + yours).
-8. Add whatever endpoints make sense following `app/main.py`'s existing
-   pattern (a `POST /operations/issues/compute` to run detection, a
-   `GET /operations/issues?tenant_bank_id=...&issue_type=...` to list) —
-   same request/response shape as the `/anomaly/*` endpoints, and regenerate
-   `docs/openapi.json` (`python -m scripts.generate_openapi`) once they're in.
-9. Commit, push your branch, open a PR into `main`. In the description: how
+   (compare to now) and `file_reached_settlement` isn't `True`. Deterministic,
+   `severity_score=None` — same style as `detect_duplicate_payments()`, worth
+   reading as the pattern (idempotent full-replace scoped to the *requested*
+   tenant, not just whichever tenants happened to produce a flagged row this
+   run — a real bug that pattern specifically avoids, see its own comment).
+3. **Network/Processor Timeout**: reuse `EntitySnapshot.timeout_ratio`
+   (already computed per merchant per week by Track A) and Track C's
+   `_score_sequence()` z-score core from `app/anomaly/timeseries.py` — same
+   approach `score_format_rejection_drift()` in `app/operations/format_rejection.py`
+   already takes for the reject-rate spike, just swap the feature name. Only
+   write a row once the score crosses a real bar (that file uses 60 — reuse
+   or justify a different number) so the table doesn't fill with non-issues
+   on the many weeks where nothing actually spiked.
+4. Tests: new files `tests/test_batch_settlement.py`, `tests/test_network_timeout.py`
+   (`tests/test_duplicate_payment.py`/`test_format_rejection.py` are the
+   pattern) — synthetic fixtures per issue type, plus a real-data run
+   reporting how many of each issue type actually show up.
+5. `pytest -q` — must stay green (98 existing + yours; **2 known failures against
+   the committed real data are expected, not yours to fix** — see Setup above).
+6. Endpoints in `app/main.py` following the existing four `/operations/*`
+   ones as the pattern (`POST .../compute`, feeding the shared `GET
+   /operations/issues` list). Regenerate `docs/openapi.json`
+   (`python -m scripts.generate_openapi`) once they're in.
+7. Commit, push your branch, open a PR into `main`. In the description: how
    many of each issue type were found in the real Meridian data, and 1–2
-   concrete examples per issue type.
+   concrete examples per issue type — same as Duplicate Payment/Formatting
+   Rejection's numbers above.
 
-**Where to push**: new table `operational_issues`, via your branch → PR into
-`main` — same merge pattern as Tracks B/C/D (branch off `main`, verify tests
-green on a clean DB reset, restore real data, push, PR).
+**Where to push**: same table `operational_issues` (already exists), new
+`issue_type` values — via your branch → PR into `main`.
 
 ### How this fits into the complete pipeline
 
@@ -594,13 +631,15 @@ combined output. Next up: Step 6b (Operational Issues, above), then Steps 7–8.
 ## Running tests
 
 ```bash
-pytest -q                                   # full suite, 82 tests total. Against the committed real data: 80
-                                             # passing, 2 expected KEYBANK failures (see Setup above). On a clean
-                                             # DB reset: 81 passing, 1 expected failure (needs real Meridian data --
-                                             # test_train_endpoint_scores_real_meridian_data). Never both states at
-                                             # once; that's expected, not a regression either way.
-pytest tests/test_anomaly_features.py -v    # Track A
-pytest tests/test_isolation_forest.py -v    # Track B + final aggregation
-pytest tests/test_timeseries.py -v          # Track C (merchant drift + Funnel Account drift)
-pytest tests/test_clustering.py -v          # Track D
+pytest -q                                        # full suite, 98 tests total. Against the committed real data: 96
+                                                  # passing, 2 expected KEYBANK failures (see Setup above). On a clean
+                                                  # DB reset: 97 passing, 1 expected failure (needs real Meridian data --
+                                                  # test_train_endpoint_scores_real_meridian_data). Never both states at
+                                                  # once; that's expected, not a regression either way.
+pytest tests/test_anomaly_features.py -v         # Track A
+pytest tests/test_isolation_forest.py -v         # Track B + final aggregation
+pytest tests/test_timeseries.py -v               # Track C (merchant drift + Funnel Account drift)
+pytest tests/test_clustering.py -v               # Track D
+pytest tests/test_duplicate_payment.py -v        # Operational Issues: Duplicate Payment
+pytest tests/test_format_rejection.py -v         # Operational Issues: Formatting Rejection
 ```
