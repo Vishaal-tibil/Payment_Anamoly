@@ -44,6 +44,7 @@ FEATURE_COLUMNS = [
     "timeout_ratio",
     "format_reject_ratio",
     "account_age_days",
+    "near_threshold_ratio",  # structuring proxy, added for knowledge doc Section 10
 ]
 
 # Section 9 fallback tiers, keyed off each entity's total transaction count

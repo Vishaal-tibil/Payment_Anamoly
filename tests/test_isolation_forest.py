@@ -34,6 +34,7 @@ def _make_snapshot(db, **overrides):
         timeout_ratio=0.0,
         format_reject_ratio=0.0,
         account_age_days=90.0,
+        near_threshold_ratio=0.0,
         split="train",
     )
     defaults.update(overrides)
@@ -66,6 +67,33 @@ def test_obvious_outlier_scores_higher_than_normal_rows(db_session):
     assert outlier_score is not None
     assert all(s is not None for s in normal_scores)
     assert outlier_score > max(normal_scores)
+
+
+def test_structuring_pattern_scores_higher_via_near_threshold_ratio(db_session):
+    # 9 normal merchants: amounts spread widely, none clustered near the
+    # $10k threshold. 1 structuring merchant: every transaction sits just
+    # under $10k -- same overall transaction_count/amount_total ballpark
+    # as the normal group, so near_threshold_ratio is the feature that has
+    # to carry the detection, not amount alone.
+    for i in range(9):
+        _make_snapshot(
+            db_session, party_id=f"MER-NORMAL-{i}",
+            amount_total=50000.0 + i * 1000, amount_avg=5000.0 + i * 100,
+            near_threshold_ratio=0.0 + (i % 3) * 0.05,  # 0.0-0.10, incidental at most
+        )
+    _make_snapshot(
+        db_session, party_id="MER-STRUCTURING",
+        amount_total=95000.0, amount_avg=9500.0, amount_median=9500.0, amount_std=200.0,
+        near_threshold_ratio=1.0,  # every transaction in [9000, 10000)
+    )
+
+    train_and_score(db_session)
+
+    rows = {r.party_id: r.isolation_forest_score for r in db_session.query(EntitySnapshot).all()}
+    structuring_score = rows.pop("MER-STRUCTURING")
+    normal_scores = list(rows.values())
+
+    assert structuring_score > max(normal_scores)
 
 
 def test_scores_are_rescaled_into_0_to_100(db_session):

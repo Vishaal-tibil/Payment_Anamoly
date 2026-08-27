@@ -93,7 +93,7 @@ def test_snapshot_values_are_unaffected_by_the_flags_it_must_not_use(db_session)
     for field in (
         "transaction_count", "amount_total", "amount_avg", "amount_median", "amount_std",
         "unique_counterparties", "new_counterparty_ratio", "retry_ratio",
-        "avg_response_time_ms", "timeout_ratio", "format_reject_ratio",
+        "avg_response_time_ms", "timeout_ratio", "format_reject_ratio", "near_threshold_ratio",
     ):
         assert getattr(clean, field) == getattr(flagged, field), f"{field} differs -- possible leakage"
 
@@ -113,6 +113,18 @@ def test_recompute_replaces_not_duplicates(db_session):
     compute_snapshots(db_session)
 
     assert db_session.query(EntitySnapshot).filter_by(party_id="MER-1").count() == 1
+
+
+def test_near_threshold_ratio_flags_amounts_just_under_10k(db_session):
+    _make_event(db_session, transaction_id="TXN-1", amount=9500.0, transaction_occurred_at="2026-05-01T10:00:00Z")
+    _make_event(db_session, transaction_id="TXN-2", amount=9999.99, transaction_occurred_at="2026-05-02T10:00:00Z")
+    _make_event(db_session, transaction_id="TXN-3", amount=100.0, transaction_occurred_at="2026-05-03T10:00:00Z")
+    _make_event(db_session, transaction_id="TXN-4", amount=10000.0, transaction_occurred_at="2026-05-04T10:00:00Z")  # at threshold, not under it
+
+    compute_snapshots(db_session)
+
+    snapshot = db_session.query(EntitySnapshot).filter_by(party_id="MER-1").one()
+    assert snapshot.near_threshold_ratio == 0.5  # TXN-1, TXN-2 out of 4
 
 
 def test_timeout_and_retry_ratios_from_raw_fields(db_session):
