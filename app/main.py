@@ -21,9 +21,11 @@ from .feature_store import compute_features
 from .ingestion import process_file
 from .models import CanonicalEvent, Individual, Merchant, PartyFeatures
 from .operations import models as operations_models  # noqa: F401  -- registers operational_issues
+from .operations.drift import detect_timeout_spikes
 from .operations.duplicate_payment import detect_duplicate_payments
 from .operations.format_rejection import list_format_rejections, score_format_rejection_drift
 from .operations.models import OperationalIssue
+from .operations.rules import detect_unsettled_batches
 from .reconciliation import models as reconciliation_models  # noqa: F401  -- registers reconciliation_breaks
 from .reconciliation.breaks import detect_reconciliation_breaks
 from .reconciliation.models import ReconciliationBreak
@@ -549,6 +551,30 @@ async def score_format_rejection_drift_endpoint(
     db: Session = Depends(get_db),
 ):
     return score_format_rejection_drift(db, tenant_bank_id=body.tenant_bank_id)
+
+
+class DetectUnsettledBatchesRequest(BaseModel):
+    tenant_bank_id: str | None = None
+
+
+@app.post("/operations/batches/compute")
+async def detect_unsettled_batches_endpoint(
+    body: DetectUnsettledBatchesRequest = DetectUnsettledBatchesRequest(),
+    db: Session = Depends(get_db),
+):
+    return detect_unsettled_batches(db, tenant_bank_id=body.tenant_bank_id)
+
+
+class DetectTimeoutSpikesRequest(BaseModel):
+    tenant_bank_id: str | None = None
+
+
+@app.post("/operations/timeout/compute")
+async def detect_timeout_spikes_endpoint(
+    body: DetectTimeoutSpikesRequest = DetectTimeoutSpikesRequest(),
+    db: Session = Depends(get_db),
+):
+    return detect_timeout_spikes(db, tenant_bank_id=body.tenant_bank_id)
 
 
 def _operational_issue_summary(issue: OperationalIssue) -> dict:

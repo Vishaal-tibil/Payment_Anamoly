@@ -11,9 +11,9 @@ info:
     B (Isolation Forest), Track C (time-series drift, including Funnel Account detection),
     Track D (HDBSCAN clustering), and the Section 8 final aggregation that combines
     all three model tracks into one final_anomaly_score/anomaly_band per entity --
-    plus two of the four Operational Issues engine (Step 6b) detectors: Duplicate
-    Payment and Formatting Rejection. The other two (Network/Processor Timeout, Batch
-    Never Settles) are being built separately and aren''t reflected here yet.
+    plus the complete Operational Issues engine (Step 6b, all four detectors: Duplicate
+    Payment, Formatting Rejection, Batch Never Settles, Network/Processor Timeout)
+    and the Reconciliation engine (Step 6c).
 
 
     All `/anomaly/*/compute` and `/resolve/parties` and `/features/compute` endpoints
@@ -697,6 +697,56 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       tags:
       - Operational Issues - Formatting Rejection (Step 6b)
+  /operations/batches/compute:
+    post:
+      summary: Detect Unsettled Batches Endpoint
+      operationId: detect_unsettled_batches_endpoint_operations_batches_compute_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DetectUnsettledBatchesRequest'
+              default: {}
+      responses:
+        '200':
+          description: Unsettled-batch detection run completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetectUnsettledBatchesResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      tags:
+      - Operational Issues - Batch Never Settles (Step 6b)
+  /operations/timeout/compute:
+    post:
+      summary: Detect Timeout Spikes Endpoint
+      operationId: detect_timeout_spikes_endpoint_operations_timeout_compute_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DetectTimeoutSpikesRequest'
+              default: {}
+      responses:
+        '200':
+          description: Timeout-spike detection run completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetectTimeoutSpikesResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      tags:
+      - Operational Issues - Network/Processor Timeout (Step 6b)
   /operations/issues:
     get:
       summary: List Operational Issues
@@ -904,6 +954,24 @@ components:
           title: Tenant Bank Id
       type: object
       title: DetectReconciliationBreaksRequest
+    DetectTimeoutSpikesRequest:
+      properties:
+        tenant_bank_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tenant Bank Id
+      type: object
+      title: DetectTimeoutSpikesRequest
+    DetectUnsettledBatchesRequest:
+      properties:
+        tenant_bank_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tenant Bank Id
+      type: object
+      title: DetectUnsettledBatchesRequest
     HTTPValidationError:
       properties:
         detail:
@@ -1687,12 +1755,37 @@ components:
       required:
       - weeks_scored
       - spikes_flagged
+    DetectUnsettledBatchesResult:
+      type: object
+      description: Returned by POST /operations/batches/compute.
+      properties:
+        batches_checked:
+          type: integer
+        batches_flagged:
+          type: integer
+          description: Past expected_settlement_at with at least one unsettled transaction.
+      required:
+      - batches_checked
+      - batches_flagged
+    DetectTimeoutSpikesResult:
+      type: object
+      description: Returned by POST /operations/timeout/compute.
+      properties:
+        weeks_checked:
+          type: integer
+          description: Merchant-weeks with enough prior history to z-score at all.
+        weeks_flagged:
+          type: integer
+          description: Of those, how many had |z-score| >= 2.0.
+      required:
+      - weeks_checked
+      - weeks_flagged
     OperationalIssue:
       type: object
-      description: One detected operational issue instance. issue_type is one of DUPLICATE_PAYMENT,
-        FORMAT_REJECTION, FORMAT_REJECTION_SPIKE today (NETWORK_TIMEOUT_SPIKE, BATCH_NOT_SETTLED
-        pending another track). severity_score is null for the two deterministic types
-        (binary, not scored) and 0-100 for FORMAT_REJECTION_SPIKE.
+      description: 'One detected operational issue instance -- all four issue types
+        are live: DUPLICATE_PAYMENT, FORMAT_REJECTION, FORMAT_REJECTION_SPIKE, BATCH_NOT_SETTLED
+        (deterministic, severity_score null) and NETWORK_TIMEOUT_SPIKE (0-100, z-score
+        based).'
       properties:
         id:
           type: integer
@@ -1816,5 +1909,7 @@ tags:
 - name: Anomaly Detection - Final Aggregation (Section 8)
 - name: Operational Issues - Duplicate Payment (Step 6b)
 - name: Operational Issues - Formatting Rejection (Step 6b)
+- name: Operational Issues - Batch Never Settles (Step 6b)
+- name: Operational Issues - Network/Processor Timeout (Step 6b)
 - name: Operational Issues - Issue Feed (Step 6b)
 - name: Reconciliation (Step 6c)

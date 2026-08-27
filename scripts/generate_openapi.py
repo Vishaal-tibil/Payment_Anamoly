@@ -455,14 +455,32 @@ SCHEMAS: dict[str, dict] = {
         },
         "required": ["weeks_scored", "spikes_flagged"],
     },
+    "DetectUnsettledBatchesResult": {
+        "type": "object",
+        "description": "Returned by POST /operations/batches/compute.",
+        "properties": {
+            "batches_checked": {"type": "integer"},
+            "batches_flagged": {"type": "integer", "description": "Past expected_settlement_at with at least one unsettled transaction."},
+        },
+        "required": ["batches_checked", "batches_flagged"],
+    },
+    "DetectTimeoutSpikesResult": {
+        "type": "object",
+        "description": "Returned by POST /operations/timeout/compute.",
+        "properties": {
+            "weeks_checked": {"type": "integer", "description": "Merchant-weeks with enough prior history to z-score at all."},
+            "weeks_flagged": {"type": "integer", "description": "Of those, how many had |z-score| >= 2.0."},
+        },
+        "required": ["weeks_checked", "weeks_flagged"],
+    },
     "OperationalIssue": {
         "type": "object",
         "description": (
-            "One detected operational issue instance. issue_type is one of "
-            "DUPLICATE_PAYMENT, FORMAT_REJECTION, FORMAT_REJECTION_SPIKE today "
-            "(NETWORK_TIMEOUT_SPIKE, BATCH_NOT_SETTLED pending another track). "
-            "severity_score is null for the two deterministic types (binary, "
-            "not scored) and 0-100 for FORMAT_REJECTION_SPIKE."
+            "One detected operational issue instance -- all four issue types "
+            "are live: DUPLICATE_PAYMENT, FORMAT_REJECTION, "
+            "FORMAT_REJECTION_SPIKE, BATCH_NOT_SETTLED (deterministic, "
+            "severity_score null) and NETWORK_TIMEOUT_SPIKE (0-100, z-score "
+            "based)."
         ),
         "properties": {
             "id": {"type": "integer"},
@@ -570,6 +588,8 @@ RESPONSES: dict[tuple[str, str], dict[str, dict]] = {
     ("post", "/operations/duplicate-payments/compute"): {"200": {"schema": "DetectDuplicatePaymentsResult", "description": "Duplicate-payment detection run completed."}},
     ("post", "/operations/format-rejections/compute"): {"200": {"schema": "ListFormatRejectionsResult", "description": "Format-rejection listing run completed."}},
     ("post", "/operations/format-rejections/spikes/compute"): {"200": {"schema": "ScoreFormatRejectionDriftResult", "description": "Format-rejection rate drift scoring run completed."}},
+    ("post", "/operations/batches/compute"): {"200": {"schema": "DetectUnsettledBatchesResult", "description": "Unsettled-batch detection run completed."}},
+    ("post", "/operations/timeout/compute"): {"200": {"schema": "DetectTimeoutSpikesResult", "description": "Timeout-spike detection run completed."}},
     ("get", "/operations/issues"): {"200": {"schema": "OperationalIssueList", "description": "Page of detected operational issues, most recent first."}},
     ("post", "/reconciliation/breaks/compute"): {"200": {"schema": "DetectReconciliationBreaksResult", "description": "Reconciliation break detection run completed."}},
     ("get", "/reconciliation/breaks"): {"200": {"schema": "ReconciliationBreakList", "description": "Page of detected reconciliation breaks, most recent first."}},
@@ -587,6 +607,8 @@ TAGS: dict[str, list[str]] = {
     "Anomaly Detection - Final Aggregation (Section 8)": ["/anomaly/final-score/compute"],
     "Operational Issues - Duplicate Payment (Step 6b)": ["/operations/duplicate-payments/compute"],
     "Operational Issues - Formatting Rejection (Step 6b)": ["/operations/format-rejections/compute", "/operations/format-rejections/spikes/compute"],
+    "Operational Issues - Batch Never Settles (Step 6b)": ["/operations/batches/compute"],
+    "Operational Issues - Network/Processor Timeout (Step 6b)": ["/operations/timeout/compute"],
     "Operational Issues - Issue Feed (Step 6b)": ["/operations/issues"],
     "Reconciliation (Step 6c)": ["/reconciliation/breaks/compute", "/reconciliation/breaks"],
 }
@@ -625,11 +647,10 @@ def build_spec() -> dict:
         "snapshots), Track B (Isolation Forest), Track C (time-series drift, "
         "including Funnel Account detection), Track D (HDBSCAN clustering), and "
         "the Section 8 final aggregation that combines all three model tracks "
-        "into one final_anomaly_score/anomaly_band per entity -- plus two of the "
-        "four Operational Issues engine (Step 6b) detectors: Duplicate Payment "
-        "and Formatting Rejection. The other two (Network/Processor Timeout, "
-        "Batch Never Settles) are being built separately and aren't reflected "
-        "here yet.\n\n"
+        "into one final_anomaly_score/anomaly_band per entity -- plus the "
+        "complete Operational Issues engine (Step 6b, all four detectors: "
+        "Duplicate Payment, Formatting Rejection, Batch Never Settles, "
+        "Network/Processor Timeout) and the Reconciliation engine (Step 6c).\n\n"
         "All `/anomaly/*/compute` and `/resolve/parties` and `/features/compute` "
         "endpoints are POST, take an optional `{\"tenant_bank_id\": null}` body "
         "(omit or null = all tenants), and return a run-summary object, not the "
