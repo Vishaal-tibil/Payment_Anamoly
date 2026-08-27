@@ -12,6 +12,9 @@ __pycache__/
 # Tool-internal state, not project code
 .claude/
 
+# Secrets -- never commit. Copy .env.example to .env and fill in real values.
+.env
+
 # Transient SQLite journal (data/payments.db itself IS committed --
 # it ships with real resolved Meridian data + Track A snapshots
 # already computed, so the team can pull and work immediately)
