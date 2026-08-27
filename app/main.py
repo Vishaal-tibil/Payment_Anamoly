@@ -57,14 +57,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Merchant Payment Intelligence Platform", lifespan=lifespan)
 
-# Local-dev frontend (Vite) origins. Pilot system, no auth yet -- tighten
-# this to a real allowlist before any non-local deployment.
+# Local-dev frontend (Vite) origins. Regex (not a fixed port list)
+# because Vite auto-increments past 5173 whenever that port's already
+# taken -- still scoped to localhost only. Pilot system, no auth yet --
+# tighten this to a real allowlist before any non-local deployment.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173", "http://127.0.0.1:5173",
-        "http://localhost:4173", "http://127.0.0.1:4173",  # vite preview
-    ],
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
