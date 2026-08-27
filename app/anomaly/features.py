@@ -144,6 +144,23 @@ def _retry_ratio(events: list[CanonicalEvent]) -> float | None:
     return sum(1 for v in applicable if v) / len(applicable)
 
 
+# Structuring proxy (knowledge doc Section 10): amounts sitting just under
+# the $10,000 CTR reporting threshold. [9000, 10000) is a common
+# structuring band -- large enough to be a deliberate near-miss, not
+# incidental. Recomputed from raw amount facts, same as every other
+# feature here -- not a source-provided flag.
+_STRUCTURING_THRESHOLD = 10000.0
+_STRUCTURING_BAND_LOW = 9000.0
+
+
+def _near_threshold_ratio(events: list[CanonicalEvent]) -> float | None:
+    amounts = [e.amount for e in events if e.amount is not None]
+    if not amounts:
+        return None
+    near = sum(1 for a in amounts if _STRUCTURING_BAND_LOW <= a < _STRUCTURING_THRESHOLD)
+    return near / len(amounts)
+
+
 def _build_snapshot(
     party_id: str,
     party_type: str,
@@ -180,6 +197,7 @@ def _build_snapshot(
         avg_response_time_ms=avg_rt,
         timeout_ratio=timeout_ratio,
         format_reject_ratio=_format_reject_ratio(events),
+        near_threshold_ratio=_near_threshold_ratio(events),
         rails_used=sorted({e.rail_type for e in events}),
         account_age_days=(window_end - account_first_seen).total_seconds() / 86400,
         split=split,

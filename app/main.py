@@ -12,6 +12,7 @@ from . import models  # noqa: F401  -- registers tables on Base.metadata
 from .anomaly import models as anomaly_models  # noqa: F401  -- registers anomaly_entity_snapshots
 from .anomaly.beneficiary_features import compute_beneficiary_snapshots
 from .anomaly.features import compute_snapshots
+from .anomaly.isolation_forest import train_and_score
 from .anomaly.models import BeneficiarySnapshot, EntitySnapshot
 from .anomaly.timeseries import score_drift, score_funnel_drift
 from .database import Base, SessionLocal, engine, get_db
@@ -292,6 +293,24 @@ async def compute_snapshots_endpoint(
     db: Session = Depends(get_db),
 ):
     return compute_snapshots(db, tenant_bank_id=body.tenant_bank_id)
+
+
+# --- Anomaly detection engine: Track B (Isolation Forest) ---
+# Reads/writes the same EntitySnapshot rows as Track A -- see
+# app/anomaly/isolation_forest.py for the model itself. Run
+# /anomaly/snapshots/compute first if snapshots are stale; this only
+# (re)scores whatever EntitySnapshot rows already exist.
+
+class TrainIsolationForestRequest(BaseModel):
+    tenant_bank_id: str | None = None
+
+
+@app.post("/anomaly/isolation-forest/train")
+async def train_isolation_forest_endpoint(
+    body: TrainIsolationForestRequest = TrainIsolationForestRequest(),
+    db: Session = Depends(get_db),
+):
+    return train_and_score(db, tenant_bank_id=body.tenant_bank_id)
 
 
 def _snapshot_summary(s: EntitySnapshot) -> dict:
