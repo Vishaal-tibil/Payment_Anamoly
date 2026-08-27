@@ -185,11 +185,39 @@ too, and exact prompt/output shape for the frontend's incident narratives
 ## API contract (for the frontend)
 
 [`docs/openapi.json`](docs/openapi.json) (and `docs/openapi.yaml`) is the OpenAPI
-3.1 spec for all 18 endpoints on `main`, including the complete fraud/anomaly
-engine (Tracks A–D + final aggregation). Unlike `GET /docs` (FastAPI's live
-Swagger UI, generated straight from the code), this file also documents
-response shapes and includes realistic examples, since none of the endpoints
-declare a `response_model` in code.
+3.1 spec for all 29 endpoints on `main` -- the complete fraud/anomaly engine
+(Tracks A–D + final aggregation), Operational Issues (all 4 issue types),
+Reconciliation, and the `/dashboard/*` endpoints built specifically for the
+frontend (see below). Unlike `GET /docs` (FastAPI's live Swagger UI, generated
+straight from the code), this file also documents response shapes and
+includes realistic examples, since none of the endpoints declare a
+`response_model` in code.
+
+### Connecting the frontend
+
+The frontend repo ([`Payment_Anamoly_Frontend`](https://github.com/Vishaal-tibil/Payment_Anamoly_Frontend))
+is wired to this backend for its core pages (Payment Rails, Anomalies,
+Incidents Centre, Settings, Overview's real-data cards) -- see that repo's
+own README for exactly what's live vs. still mock, and why. Two things this
+backend does specifically to support that:
+
+- **CORS**: `app/main.py` allows any `localhost`/`127.0.0.1` origin
+  (`allow_origin_regex`, not a fixed port list, since Vite auto-increments
+  past 5173 when it's taken). Pilot system, no auth yet -- tighten this to a
+  real allowlist before any non-local deployment.
+- **`app/dashboard.py`**: read-only aggregation views (`GET /dashboard/overview`,
+  `GET /dashboard/rails`, `GET /dashboard/anomaly-detection-categories`) --
+  not an engine, writes nothing, just reshapes the three engines'
+  already-computed output for direct UI consumption. `/dashboard/rails` uses
+  this platform's real 5 rails (ACH/WIRE/CARD/FEDNOW/CHEQUE); never invent a
+  rail name that isn't in the actual schema.
+
+Run both together locally:
+```bash
+uvicorn app.main:app --reload --port 8000     # this repo
+# in the frontend repo:
+npm run dev                                    # picks whatever port Vite gives it
+```
 
 Paste it into [editor.swagger.io](https://editor.swagger.io) or Postman/Insomnia's
 import to browse it, or point Swagger UI/Redoc at the file directly.
@@ -224,6 +252,9 @@ correctly.
   complete). `models.py` has `ReconciliationBreak`; `breaks.py` is the only
   detector needed (deterministic — no rolling z-score half like Operational
   Issues, since reconciliation is inherently fact-based, not a rate).
+- `app/dashboard.py` — not an engine, no output table. Read-only views over
+  the three engines' output, built specifically for the frontend (see
+  "Connecting the frontend" above).
 - `unsupervised-anomaly-detection-knowledge.md` (repo root) — the design doc the
   fraud/anomaly engine follows: profile-based, unsupervised, Isolation Forest +
   HDBSCAN + time-series, scored 0–100 per entity. **Read this in full before
@@ -682,9 +713,9 @@ combined output. Next up: Step 6b (Operational Issues, above), then Steps 7–8.
 ## Running tests
 
 ```bash
-pytest -q                                        # full suite, 120 tests total. Against the committed real data: 118
+pytest -q                                        # full suite, 129 tests total. Against the committed real data: 127
                                                   # passing, 2 expected KEYBANK failures (see Setup above). On a clean
-                                                  # DB reset: 119 passing, 1 expected failure (needs real Meridian data --
+                                                  # DB reset: 128 passing, 1 expected failure (needs real Meridian data --
                                                   # test_train_endpoint_scores_real_meridian_data). Never both states at
                                                   # once; that's expected, not a regression either way.
 pytest tests/test_anomaly_features.py -v         # Track A
@@ -695,4 +726,5 @@ pytest tests/test_duplicate_payment.py -v        # Operational Issues: Duplicate
 pytest tests/test_format_rejection.py -v         # Operational Issues: Formatting Rejection
 pytest tests/test_operational_issues.py -v       # Operational Issues: Batch Never Settles + Network/Processor Timeout
 pytest tests/test_reconciliation.py -v           # Reconciliation
+pytest tests/test_dashboard.py -v                # Dashboard aggregation views (frontend)
 ```
