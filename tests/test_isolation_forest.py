@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import statistics
 from datetime import datetime, timedelta, timezone
 
@@ -133,6 +134,97 @@ def test_entity_above_segment_baseline_threshold_is_not_silently_scored(db_sessi
 
     with pytest.raises(NotImplementedError):
         train_and_score(db_session)
+
+
+def test_synthetic_injection_detection_rate(db_session):
+    """Not "model accuracy" -- that requires real fraud labels, which don't
+    exist anywhere in this pipeline (unsupervised by design). This is a
+    narrower, honest question: if we inject N *known* obvious outliers into
+    a realistic-looking normal population, what fraction does the model
+    actually rank near the top? Answers "does the mechanism work at all,"
+    not "how well would it work on real fraud" -- real fraud won't
+    necessarily look like these injections.
+
+    Recall@K here means: of the K rows actually injected as anomalies, how
+    many appear in the model's own top-K highest isolation_forest_score
+    rows. Threshold-free by construction (K = number of true positives, so
+    precision@K == recall@K) -- avoids picking an arbitrary score cutoff.
+    """
+    rng = random.Random(7)
+    n_normal = 90
+    n_injected = 10
+
+    normal_ids = [f"MER-NORMAL-{i}" for i in range(n_normal)]
+    for party_id in normal_ids:
+        txn_count = rng.randint(15, 40)
+        amount_avg = rng.gauss(3000, 400)
+        _make_snapshot(
+            db_session, party_id=party_id,
+            transaction_count=txn_count,
+            amount_total=amount_avg * txn_count,
+            amount_avg=amount_avg,
+            amount_median=amount_avg * rng.uniform(0.9, 1.1),
+            amount_std=amount_avg * rng.uniform(0.1, 0.3),
+            unique_counterparties=rng.randint(3, 10),
+            new_counterparty_ratio=rng.uniform(0.1, 0.4),
+            retry_ratio=rng.uniform(0.0, 0.05),
+            avg_response_time_ms=rng.gauss(300, 50),
+            timeout_ratio=rng.uniform(0.0, 0.03),
+            format_reject_ratio=rng.uniform(0.0, 0.02),
+            account_age_days=rng.uniform(60, 400),
+        )
+
+    injected_ids = [f"MER-INJECTED-{i}" for i in range(n_injected)]
+    for party_id in injected_ids:
+        # 20-50x the normal amount scale, plus every counterparty new and
+        # much higher retries -- an obvious, multi-feature outlier, not
+        # just one axis nudged slightly.
+        scale = rng.uniform(20, 50)
+        amount_avg = 3000 * scale
+        txn_count = rng.randint(15, 40)
+        _make_snapshot(
+            db_session, party_id=party_id,
+            transaction_count=txn_count,
+            amount_total=amount_avg * txn_count,
+            amount_avg=amount_avg,
+            amount_median=amount_avg * rng.uniform(0.9, 1.1),
+            amount_std=amount_avg * rng.uniform(0.3, 0.6),
+            unique_counterparties=rng.randint(3, 10),
+            new_counterparty_ratio=1.0,
+            retry_ratio=rng.uniform(0.3, 0.6),
+            avg_response_time_ms=rng.gauss(300, 50),
+            timeout_ratio=rng.uniform(0.0, 0.03),
+            format_reject_ratio=rng.uniform(0.0, 0.02),
+            account_age_days=rng.uniform(60, 400),
+        )
+
+    train_and_score(db_session)
+
+    all_rows = db_session.query(EntitySnapshot).all()
+    ranked = sorted(all_rows, key=lambda r: r.isolation_forest_score, reverse=True)
+
+    def recall_at_k(k: int) -> float:
+        top_k_ids = {r.party_id for r in ranked[:k]}
+        caught = sum(1 for pid in injected_ids if pid in top_k_ids)
+        return caught / n_injected
+
+    recall_at_10 = recall_at_k(n_injected)
+    recall_at_20 = recall_at_k(n_injected * 2)
+
+    injected_scores = [r.isolation_forest_score for r in all_rows if r.party_id in injected_ids]
+    normal_scores = [r.isolation_forest_score for r in all_rows if r.party_id in normal_ids]
+
+    print(f"\nSynthetic injection check: {n_injected} injected / {n_normal} normal")
+    print(f"  recall@{n_injected} (precision@K, K=true positives): {recall_at_10:.0%}")
+    print(f"  recall@{n_injected * 2}: {recall_at_20:.0%}")
+    print(f"  injected scores: min={min(injected_scores):.1f} median={statistics.median(injected_scores):.1f}")
+    print(f"  normal scores:   min={min(normal_scores):.1f} median={statistics.median(normal_scores):.1f}")
+
+    # Not a claim about real-world fraud detection -- just proves the
+    # mechanism reliably surfaces obvious, multi-feature outliers near the
+    # top of the ranking on a population it wasn't tuned to.
+    assert recall_at_10 >= 0.7
+    assert statistics.median(injected_scores) > statistics.median(normal_scores)
 
 
 def test_real_data_score_distribution_sanity_check():
