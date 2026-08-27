@@ -16,6 +16,10 @@ from .database import Base, SessionLocal, engine, get_db
 from .feature_store import compute_features
 from .ingestion import process_file
 from .models import CanonicalEvent, Individual, Merchant, PartyFeatures
+from .operations import models as operations_models  # noqa: F401  -- registers operational_issues
+from .operations.drift import detect_timeout_spikes
+from .operations.models import OperationalIssue
+from .operations.rules import detect_unsettled_batches
 from .resolution import resolve_parties
 from .seed import seed_sample_mappings_if_empty
 
@@ -353,4 +357,68 @@ async def list_snapshots(
     return {
         "total": total,
         "snapshots": [_snapshot_summary(s) for s in rows],
+    }
+
+
+# --- Operational Issues engine (Step 6b) ---
+# Separate from the anomaly engine above -- see app/operations/__init__.py
+# for why file_reached_settlement/timeout_ratio are read directly here
+# rather than treated as leakage. Only two issue types implemented so
+# far: BATCH_NOT_SETTLED (deterministic) and NETWORK_TIMEOUT_SPIKE
+# (rolling z-score). Duplicate Payment and Formatting Rejection are
+# deliberately out of scope for this pass.
+
+class ComputeOperationalIssuesRequest(BaseModel):
+    tenant_bank_id: str | None = None
+
+
+@app.post("/operations/issues/compute")
+async def compute_operational_issues_endpoint(
+    body: ComputeOperationalIssuesRequest = ComputeOperationalIssuesRequest(),
+    db: Session = Depends(get_db),
+):
+    batch_result = detect_unsettled_batches(db, tenant_bank_id=body.tenant_bank_id)
+    timeout_result = detect_timeout_spikes(db, tenant_bank_id=body.tenant_bank_id)
+    return {
+        "batch_not_settled": batch_result,
+        "network_timeout_spike": timeout_result,
+    }
+
+
+def _operational_issue_summary(i: OperationalIssue) -> dict:
+    return {
+        "id": i.id,
+        "issue_type": i.issue_type,
+        "tenant_bank_id": i.tenant_bank_id,
+        "reference_type": i.reference_type,
+        "reference_id": i.reference_id,
+        "window_start": i.window_start,
+        "window_end": i.window_end,
+        "severity_score": i.severity_score,
+        "details": i.details,
+        "detected_at": i.detected_at,
+    }
+
+
+@app.get("/operations/issues")
+async def list_operational_issues(
+    tenant_bank_id: str,
+    issue_type: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    base_query = db.query(OperationalIssue).filter(OperationalIssue.tenant_bank_id == tenant_bank_id)
+    if issue_type:
+        base_query = base_query.filter(OperationalIssue.issue_type == issue_type.upper())
+    total = base_query.count()
+    rows = (
+        base_query.order_by(OperationalIssue.detected_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return {
+        "total": total,
+        "issues": [_operational_issue_summary(i) for i in rows],
     }
