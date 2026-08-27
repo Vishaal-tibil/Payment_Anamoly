@@ -173,37 +173,27 @@ def train_and_score(db: Session, tenant_bank_id: str | None = None) -> dict[str,
 
 
 # --- Section 8: final aggregation -----------------------------------------
-# NOT wired to a script/endpoint yet, and must not be run against real data
-# until Track C (timeseries_drift_score) and Track D (cluster_id /
-# cluster_changed) are both merged into main. Every EntitySnapshot row's
-# timeseries_drift_score and cluster_changed are still None on real data
-# today -- calling this now would silently produce a "final" score that's
-# really just 0.40 * isolation_forest_score with the other two signals
-# zeroed out, which is worse than no final score at all if it ends up on a
-# dashboard looking authoritative. Built and tested against synthetic data
-# now so it's ready to run for real the moment both tracks land -- that's
-# the second PR per the README, not this one.
+# Track C (timeseries_drift_score) and Track D (cluster_id/cluster_changed)
+# are now both merged into main (see the "conclude fraud/anomaly" merge),
+# so this is wired to a real endpoint (POST /anomaly/final-score/compute)
+# and safe to run against real data.
 
 _AGGREGATION_WEIGHTS = {"isolation_forest": 0.40, "clustering": 0.25, "timeseries": 0.35}
 
-# KNOWN SCALE MISMATCH -- flag to the team before relying on this for real:
-# isolation_forest_score and timeseries_drift_score are both 0-100, but the
-# README specifies clustering_signal as a literal 0/1 ("treat a True/changed
-# cluster as a 0/1 signal"). Plugged into the weighted sum as-is, the
-# maximum possible final_score is 0.40*100 + 0.25*1 + 0.35*100 = 75.25, so
-# the "Critical" band (80-100) is mathematically unreachable. Implemented
-# exactly per the literal spec below rather than silently rescaling
-# clustering_signal to 0/100 on my own judgment -- that's a real decision
-# for whoever owns the final weights to make once Track D's actual output
-# is visible, not something to guess at now.
-
-
+# SCALE MISMATCH FIX: isolation_forest_score and timeseries_drift_score are
+# both 0-100, but the original spec described clustering_signal as a
+# literal 0/1 ("treat a True/changed cluster as a 0/1 signal"). Plugged
+# into the weighted sum as a literal 0/1, the maximum possible final_score
+# would be 0.40*100 + 0.25*1 + 0.35*100 = 75.25 -- the "Critical" band
+# (80-100) would be mathematically unreachable no matter how anomalous an
+# entity actually is. Rescaled to 0/100 instead so all three signals share
+# the same 0-100 scale the weights assume, and Critical is reachable.
 def _clustering_signal(cluster_changed: bool | None) -> float:
-    # True/changed -> 1.0, False -> 0.0, None (not applicable yet, e.g. an
-    # individual with no prior snapshot to compare against) -> 0.0, per
-    # the README's explicit call: treat "not applicable" as "no evidence
-    # of change" rather than dropping the entity or crashing.
-    return 1.0 if cluster_changed else 0.0
+    # True/changed -> 100.0, False -> 0.0, None (not applicable yet, e.g.
+    # an individual with no prior snapshot to compare against) -> 0.0 --
+    # treat "not applicable" as "no evidence of change" rather than
+    # dropping the entity or crashing.
+    return 100.0 if cluster_changed else 0.0
 
 
 def _timeseries_signal(timeseries_drift_score: float | None) -> float:

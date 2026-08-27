@@ -291,15 +291,25 @@ def test_compute_final_score_weights_the_three_signals(db_session):
     compute_final_score(db_session, tenant_bank_id="KEYBANK")
 
     db_session.refresh(row)
-    # Literal README formula: IF and timeseries are 0-100, but
-    # clustering_signal is the literal 0/1 the README specifies -- NOT
-    # rescaled to 0/100 here, since that would be inventing a design
-    # decision rather than following the spec. Flagged separately: this
-    # means max possible final_score is 0.40*100 + 0.25*1 + 0.35*100 =
-    # 75.25, so "Critical" (80-100) is unreachable as currently specified.
-    expected = 0.40 * 80.0 + 0.25 * 1.0 + 0.35 * 60.0  # = 53.25
+    # cluster_changed=True rescales to 100.0 (not a literal 1.0) so all
+    # three signals share the same 0-100 scale the weights assume -- see
+    # the scale-mismatch fix note above _clustering_signal().
+    expected = 0.40 * 80.0 + 0.25 * 100.0 + 0.35 * 60.0  # = 78.0
     assert row.final_anomaly_score == pytest.approx(expected)
-    assert row.anomaly_band == "Low-Medium"
+    assert row.anomaly_band == "High"
+
+
+def test_critical_band_is_reachable(db_session):
+    # Regression test for the scale-mismatch fix: with cluster_changed
+    # rescaled to 100.0 (not a literal 1.0), a genuinely anomalous row
+    # across all three signals must be able to reach Critical (80-100).
+    row = _make_snapshot(db_session, party_id="MER-1", isolation_forest_score=95.0, cluster_changed=True, timeseries_drift_score=90.0)
+
+    compute_final_score(db_session, tenant_bank_id="KEYBANK")
+
+    db_session.refresh(row)
+    assert row.final_anomaly_score == pytest.approx(0.40 * 95.0 + 0.25 * 100.0 + 0.35 * 90.0)  # = 88.5
+    assert row.anomaly_band == "Critical"
 
 
 def test_null_clustering_and_timeseries_treated_as_zero_contribution(db_session):
@@ -333,6 +343,21 @@ def test_compute_final_score_requires_isolation_forest_score_first(db_session):
 
     with pytest.raises(ValueError):
         compute_final_score(db_session)
+
+
+def test_final_score_endpoint_runs_cleanly_with_no_matching_rows():
+    # Endpoint plumbing sanity check against the real, non-isolated
+    # SessionLocal -- doesn't exercise the 400 path (that would require
+    # writing a row with a missing isolation_forest_score into the shared
+    # real db, which this file avoids), just confirms the wiring works.
+    # The 400-vs-500 translation itself (compute_final_score's bare
+    # ValueError -> HTTPException(400)) is a two-line change reviewable by
+    # inspection; test_compute_final_score_requires_isolation_forest_score_first
+    # above covers the underlying ValueError.
+    with TestClient(app) as client:
+        resp = client.post("/anomaly/final-score/compute", json={"tenant_bank_id": "A_TENANT_WITH_NO_SNAPSHOTS_AT_ALL"})
+        assert resp.status_code == 200  # zero rows targeted -- nothing missing, nothing to score
+        assert resp.json() == {"rows_scored": 0, "band_counts": {}}
 
 
 def test_real_data_score_distribution_sanity_check():
