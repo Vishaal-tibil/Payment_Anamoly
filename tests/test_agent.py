@@ -112,6 +112,72 @@ def test_narrate_raises_on_missing_required_keys(mock_get_client):
         asyncio.run(narrate({"signal_type": "operational_issue"}))
 
 
+# Grounding check regression tests -- a real live call against real data
+# (party_id "MER-20A71A0D") came back with the identifier truncated to
+# "MER-20A71A" and vague filler ("totaling the given amount") in place of
+# the real $243,864.42 it was given. These confirm that specific failure
+# mode is now caught rather than silently cached.
+
+@patch("app.agent.narration.get_client")
+def test_narrate_passes_when_identifier_present_verbatim(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.chat.complete_async = AsyncMock(return_value=_mock_mistral_response({
+        "title": "High anomaly for merchant MER-20A71A0D",
+        "description": "Merchant MER-20A71A0D triggered a high anomaly score.",
+        "recommended_action_title": "Review merchant",
+        "recommended_action_description": "Review the merchant's recent activity.",
+    }))
+    mock_get_client.return_value = mock_client
+
+    result = asyncio.run(narrate({"signal_type": "fraud_anomaly", "party_id": "MER-20A71A0D"}))
+
+    assert "MER-20A71A0D" in result["title"]
+
+
+@patch("app.agent.narration.get_client")
+def test_narrate_raises_when_identifier_truncated(mock_get_client):
+    # The exact real bug: the trailing "0D" silently dropped.
+    mock_client = MagicMock()
+    mock_client.chat.complete_async = AsyncMock(return_value=_mock_mistral_response({
+        "title": "High Anomaly in Merchant MER-20A71A Transactions",
+        "description": "Four transactions totaling the given amount for merchant MER-20A71A triggered a high anomaly score in the specified time window.",
+        "recommended_action_title": "Review merchant transactions urgently",
+        "recommended_action_description": "Examine the four flagged transactions for potential fraud.",
+    }))
+    mock_get_client.return_value = mock_client
+
+    with pytest.raises(ValueError, match="grounding check"):
+        asyncio.run(narrate({"signal_type": "fraud_anomaly", "party_id": "MER-20A71A0D"}))
+
+
+@patch("app.agent.narration.get_client")
+def test_narrate_raises_when_identifier_missing_entirely(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.chat.complete_async = AsyncMock(return_value=_mock_mistral_response({
+        "title": "Reconciliation break detected",
+        "description": "A transaction failed to reconcile.",
+        "recommended_action_title": "Investigate",
+        "recommended_action_description": "Review the ledger entries.",
+    }))
+    mock_get_client.return_value = mock_client
+
+    with pytest.raises(ValueError, match="grounding check"):
+        asyncio.run(narrate({"signal_type": "reconciliation_break", "transaction_id": "CHK-MTB-100029"}))
+
+
+@patch("app.agent.narration.get_client")
+def test_narrate_skips_grounding_check_when_no_identifier_in_facts(mock_get_client):
+    # No identifier fact given (e.g. an unexpected/unknown signal_type) --
+    # nothing to check, must not crash on a None lookup.
+    mock_client = MagicMock()
+    mock_client.chat.complete_async = AsyncMock(return_value=_mock_mistral_response(_VALID_PAYLOAD))
+    mock_get_client.return_value = mock_client
+
+    result = asyncio.run(narrate({"signal_type": "something_unrecognized"}))
+
+    assert result["title"] == "Batch overdue"
+
+
 @patch("app.agent.narration.narrate", new_callable=AsyncMock)
 def test_get_or_create_narrative_calls_narrate_once_then_caches(mock_narrate, db_session):
     mock_narrate.return_value = {
