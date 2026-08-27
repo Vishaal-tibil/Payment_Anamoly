@@ -11,7 +11,9 @@ from sqlalchemy.orm import Session
 from . import models  # noqa: F401  -- registers tables on Base.metadata
 from .anomaly import models as anomaly_models  # noqa: F401  -- registers anomaly_entity_snapshots
 from .anomaly.beneficiary_features import compute_beneficiary_snapshots
+from .anomaly.clustering import cluster_and_score
 from .anomaly.features import compute_snapshots
+from .anomaly.isolation_forest import compute_final_score, train_and_score
 from .anomaly.models import BeneficiarySnapshot, EntitySnapshot
 from .anomaly.timeseries import score_drift, score_funnel_drift
 from .database import Base, SessionLocal, engine, get_db
@@ -292,6 +294,62 @@ async def compute_snapshots_endpoint(
     db: Session = Depends(get_db),
 ):
     return compute_snapshots(db, tenant_bank_id=body.tenant_bank_id)
+
+
+# --- Anomaly detection engine: Track B (Isolation Forest) ---
+# Reads/writes the same EntitySnapshot rows as Track A -- see
+# app/anomaly/isolation_forest.py for the model itself. Run
+# /anomaly/snapshots/compute first if snapshots are stale; this only
+# (re)scores whatever EntitySnapshot rows already exist.
+
+class TrainIsolationForestRequest(BaseModel):
+    tenant_bank_id: str | None = None
+
+
+@app.post("/anomaly/isolation-forest/train")
+async def train_isolation_forest_endpoint(
+    body: TrainIsolationForestRequest = TrainIsolationForestRequest(),
+    db: Session = Depends(get_db),
+):
+    return train_and_score(db, tenant_bank_id=body.tenant_bank_id)
+
+
+# --- Anomaly detection engine: Track D (HDBSCAN clustering) ---
+# Also reads/writes EntitySnapshot -- see app/anomaly/clustering.py.
+
+class ClusterAndScoreRequest(BaseModel):
+    tenant_bank_id: str | None = None
+
+
+@app.post("/anomaly/clustering/compute")
+async def cluster_and_score_endpoint(
+    body: ClusterAndScoreRequest = ClusterAndScoreRequest(),
+    db: Session = Depends(get_db),
+):
+    return cluster_and_score(db, tenant_bank_id=body.tenant_bank_id)
+
+
+# --- Anomaly detection engine: Section 8 final aggregation ---
+# Combines isolation_forest_score (Track B) + cluster_changed (Track D) +
+# timeseries_drift_score (Track C) into final_anomaly_score/anomaly_band.
+# Run /anomaly/isolation-forest/train first -- this raises if any targeted
+# row is missing isolation_forest_score. Clustering/timeseries are NOT
+# required to be populated first (null there just means 0 contribution
+# from that signal, not a hard dependency) but should be, for a real score.
+
+class ComputeFinalScoreRequest(BaseModel):
+    tenant_bank_id: str | None = None
+
+
+@app.post("/anomaly/final-score/compute")
+async def compute_final_score_endpoint(
+    body: ComputeFinalScoreRequest = ComputeFinalScoreRequest(),
+    db: Session = Depends(get_db),
+):
+    try:
+        return compute_final_score(db, tenant_bank_id=body.tenant_bank_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _snapshot_summary(s: EntitySnapshot) -> dict:

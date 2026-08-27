@@ -6,17 +6,19 @@ info:
     team.
 
 
-    Covers Steps 1-5 (ingestion, identity resolution, feature store) plus the anomaly-detection
-    engine''s Track A (behavioral snapshots), Track C (time-series drift, including
-    Funnel Account detection), and Funnel Account''s beneficiary-side input table.
-    Endpoints marked **[PENDING MERGE]** are written and tested on a teammate''s branch
-    but not yet on `main` -- confirm merged before building against them.
+    Covers Steps 1-5 (ingestion, identity resolution, feature store) plus the complete
+    Fraud/Anomaly Detection engine (Step 6a): Track A (behavioral snapshots), Track
+    B (Isolation Forest), Track C (time-series drift, including Funnel Account detection),
+    Track D (HDBSCAN clustering), and the Section 8 final aggregation that combines
+    all three model tracks into one final_anomaly_score/anomaly_band per entity.
 
 
     All `/anomaly/*/compute` and `/resolve/parties` and `/features/compute` endpoints
     are POST, take an optional `{"tenant_bank_id": null}` body (omit or null = all
     tenants), and return a run-summary object, not the computed rows themselves --
-    fetch those via the matching GET endpoint.'
+    fetch those via the matching GET endpoint. Run them in dependency order for a
+    fresh tenant: snapshots/compute -> isolation-forest/train + timeseries/compute
+    + clustering/compute (any order) -> final-score/compute.'
   contact:
     name: Vishaal
     email: vishaal.g@tibilsolutions.com
@@ -348,6 +350,88 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       tags:
       - Anomaly Detection - Behavioral Snapshots (Track A)
+  /anomaly/isolation-forest/train:
+    post:
+      summary: Train Isolation Forest Endpoint
+      operationId: train_isolation_forest_endpoint_anomaly_isolation_forest_train_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrainIsolationForestRequest'
+              default: {}
+      responses:
+        '200':
+          description: Training run completed for both segments.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IsolationForestTrainResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      tags:
+      - Anomaly Detection - Isolation Forest (Track B)
+  /anomaly/clustering/compute:
+    post:
+      summary: Cluster And Score Endpoint
+      operationId: cluster_and_score_endpoint_anomaly_clustering_compute_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClusterAndScoreRequest'
+              default: {}
+      responses:
+        '200':
+          description: Clustering run completed for both segments.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClusterAndScoreResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      tags:
+      - Anomaly Detection - HDBSCAN Clustering (Track D)
+  /anomaly/final-score/compute:
+    post:
+      summary: Compute Final Score Endpoint
+      operationId: compute_final_score_endpoint_anomaly_final_score_compute_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComputeFinalScoreRequest'
+              default: {}
+      responses:
+        '200':
+          description: Final aggregation run completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComputeFinalScoreResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '400':
+          description: One or more targeted rows are missing isolation_forest_score
+            -- run POST /anomaly/isolation-forest/train first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPError'
+      tags:
+      - Anomaly Detection - Final Aggregation (Section 8)
   /anomaly/snapshots:
     get:
       summary: List Snapshots
@@ -535,34 +619,6 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       tags:
       - Anomaly Detection - Funnel Account (Track A input + Track C)
-  /anomaly/isolation-forest/train:
-    post:
-      tags:
-      - Anomaly Detection - Isolation Forest (Track B, pending merge)
-      summary: '[PENDING MERGE] Train Isolation Forest'
-      description: '**Not yet on `main`** -- lives on branch `track-b-isolation-forest`.
-        Shape confirmed from that branch''s code, not guessed; will be added to `main`''s
-        live OpenAPI spec once merged. Do not build against this until it''s confirmed
-        merged.
-
-
-        Trains one Isolation Forest per segment (MERCHANT, INDIVIDUAL) on that segment''s
-        split="train" EntitySnapshot rows, scores every row in the segment, and writes
-        EntitySnapshot.isolation_forest_score.'
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/TrainIsolationForestRequest'
-      responses:
-        '200':
-          description: Training run completed for both segments.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IsolationForestTrainResult'
-        '422':
-          description: Invalid request body.
 components:
   schemas:
     Body_ingest_file_ingest_file_post:
@@ -586,6 +642,15 @@ components:
       - settlement_stage
       - file
       title: Body_ingest_file_ingest_file_post
+    ClusterAndScoreRequest:
+      properties:
+        tenant_bank_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tenant Bank Id
+      type: object
+      title: ClusterAndScoreRequest
     ComputeBeneficiarySnapshotsRequest:
       properties:
         tenant_bank_id:
@@ -604,6 +669,15 @@ components:
           title: Tenant Bank Id
       type: object
       title: ComputeFeaturesRequest
+    ComputeFinalScoreRequest:
+      properties:
+        tenant_bank_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tenant Bank Id
+      type: object
+      title: ComputeFinalScoreRequest
     ComputeSnapshotsRequest:
       properties:
         tenant_bank_id:
@@ -661,6 +735,15 @@ components:
         is_pre_settlement), unlike rail_type/tenant_bank_id which are free-form
 
         config values so a new rail or bank never requires a code change.'
+    TrainIsolationForestRequest:
+      properties:
+        tenant_bank_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tenant Bank Id
+      type: object
+      title: TrainIsolationForestRequest
     ValidationError:
       properties:
         loc:
@@ -1261,12 +1344,79 @@ components:
       required:
       - MERCHANT
       - INDIVIDUAL
-    TrainIsolationForestRequest:
+    ClusterSegmentResult:
       type: object
       properties:
-        tenant_bank_id:
-          type: string
-          nullable: true
+        rows_clustered:
+          type: integer
+        distinct_parties:
+          type: integer
+        cluster_sizes:
+          type: object
+          description: Cluster id (as a string key; -1 is HDBSCAN's "noise"/unclustered
+            label, not an error) -> row count.
+          additionalProperties:
+            type: integer
+          example:
+            '-1': 63
+            '0': 14
+            '1': 6
+        n_clusters:
+          type: integer
+          description: Count of real clusters found, excluding noise (-1).
+        noise_count:
+          type: integer
+      required:
+      - rows_clustered
+      - distinct_parties
+      - cluster_sizes
+      - n_clusters
+      - noise_count
+    ClusterAndScoreResult:
+      type: object
+      description: Returned by POST /anomaly/clustering/compute. Keyed by segment.
+      properties:
+        segments:
+          type: object
+          properties:
+            MERCHANT:
+              $ref: '#/components/schemas/ClusterSegmentResult'
+            INDIVIDUAL:
+              $ref: '#/components/schemas/ClusterSegmentResult'
+        errors: *id001
+      required:
+      - segments
+      - errors
+    ComputeFinalScoreResult:
+      type: object
+      description: Returned by POST /anomaly/final-score/compute. Requires isolation_forest_score
+        already populated on every targeted row (run POST /anomaly/isolation-forest/train
+        first) -- 400s otherwise. cluster_changed/timeseries_drift_score do NOT need
+        to be populated first; null there contributes 0 to that row's weighted score
+        rather than blocking the run.
+      properties:
+        rows_scored:
+          type: integer
+        band_counts:
+          type: object
+          description: anomaly_band -> row count, for whichever bands actually occurred.
+          properties:
+            Normal:
+              type: integer
+            Low-Medium:
+              type: integer
+            High:
+              type: integer
+            Critical:
+              type: integer
+          example:
+            Normal: 98
+            Low-Medium: 68
+            High: 6
+            Critical: 2
+      required:
+      - rows_scored
+      - band_counts
 servers:
 - url: http://localhost:8000
   description: Local dev (uvicorn app.main:app --reload)
@@ -1275,6 +1425,8 @@ tags:
 - name: Identity Resolution (Step 4)
 - name: Feature Store (Step 5, dashboard only)
 - name: Anomaly Detection - Behavioral Snapshots (Track A)
+- name: Anomaly Detection - Isolation Forest (Track B)
 - name: Anomaly Detection - Time-Series Drift (Track C)
 - name: Anomaly Detection - Funnel Account (Track A input + Track C)
-- name: Anomaly Detection - Isolation Forest (Track B, pending merge)
+- name: Anomaly Detection - HDBSCAN Clustering (Track D)
+- name: Anomaly Detection - Final Aggregation (Section 8)

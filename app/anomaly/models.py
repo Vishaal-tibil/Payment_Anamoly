@@ -57,6 +57,14 @@ class EntitySnapshot(Base):
     timeout_ratio = Column(Float, nullable=True)  # response_time_ms > expected_response_sla_ms, computed by us
     format_reject_ratio = Column(Float, nullable=True)
 
+    # Structuring proxy (knowledge doc Section 10): fraction of this
+    # window's transactions sitting just under the $10,000 CTR reporting
+    # threshold. Recomputed fresh from raw amount facts -- not a source
+    # pre-built flag -- so it's a legitimate Input contract feature, same
+    # rule as new_counterparty_ratio. Added on Track B's branch; Track A
+    # (features.py) owns populating it going forward.
+    near_threshold_ratio = Column(Float, nullable=True)
+
     rails_used = Column(JSON, nullable=True)
     account_age_days = Column(Float, nullable=True)  # days since this party's first-ever transaction
 

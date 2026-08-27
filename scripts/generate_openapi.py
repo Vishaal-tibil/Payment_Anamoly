@@ -11,11 +11,6 @@ those DO come from real Pydantic models) and enriches it with response
 schemas and realistic examples hand-derived from the actual return
 shapes in main.py / resolution.py / feature_store.py / anomaly/*.py.
 
-Also includes POST /anomaly/isolation-forest/train, which exists on the
-unmerged track-b-isolation-forest branch (not app/main.py on main yet).
-It's marked pending in its description -- shape confirmed by reading
-train_and_score()'s actual return statement on that branch, not guessed.
-
 Re-run this after any endpoint/response-shape change and re-share the
 regenerated file; it is not wired to a test or CI, just a one-off/
 periodic doc generator.
@@ -379,6 +374,63 @@ SCHEMAS: dict[str, dict] = {
         },
         "required": ["MERCHANT", "INDIVIDUAL"],
     },
+    "ClusterSegmentResult": {
+        "type": "object",
+        "properties": {
+            "rows_clustered": {"type": "integer"},
+            "distinct_parties": {"type": "integer"},
+            "cluster_sizes": {
+                "type": "object",
+                "description": "Cluster id (as a string key; -1 is HDBSCAN's \"noise\"/unclustered label, not an error) -> row count.",
+                "additionalProperties": {"type": "integer"},
+                "example": {"-1": 63, "0": 14, "1": 6},
+            },
+            "n_clusters": {"type": "integer", "description": "Count of real clusters found, excluding noise (-1)."},
+            "noise_count": {"type": "integer"},
+        },
+        "required": ["rows_clustered", "distinct_parties", "cluster_sizes", "n_clusters", "noise_count"],
+    },
+    "ClusterAndScoreResult": {
+        "type": "object",
+        "description": "Returned by POST /anomaly/clustering/compute. Keyed by segment.",
+        "properties": {
+            "segments": {
+                "type": "object",
+                "properties": {
+                    "MERCHANT": {"$ref": "#/components/schemas/ClusterSegmentResult"},
+                    "INDIVIDUAL": {"$ref": "#/components/schemas/ClusterSegmentResult"},
+                },
+            },
+            "errors": _ERRORS_ARRAY,
+        },
+        "required": ["segments", "errors"],
+    },
+    "ComputeFinalScoreResult": {
+        "type": "object",
+        "description": (
+            "Returned by POST /anomaly/final-score/compute. Requires "
+            "isolation_forest_score already populated on every targeted row "
+            "(run POST /anomaly/isolation-forest/train first) -- 400s otherwise. "
+            "cluster_changed/timeseries_drift_score do NOT need to be populated "
+            "first; null there contributes 0 to that row's weighted score rather "
+            "than blocking the run."
+        ),
+        "properties": {
+            "rows_scored": {"type": "integer"},
+            "band_counts": {
+                "type": "object",
+                "description": "anomaly_band -> row count, for whichever bands actually occurred.",
+                "properties": {
+                    "Normal": {"type": "integer"},
+                    "Low-Medium": {"type": "integer"},
+                    "High": {"type": "integer"},
+                    "Critical": {"type": "integer"},
+                },
+                "example": {"Normal": 98, "Low-Medium": 68, "High": 6, "Critical": 2},
+            },
+        },
+        "required": ["rows_scored", "band_counts"],
+    },
 }
 
 # --- Per-path response overrides ----------------------------------------
@@ -413,6 +465,12 @@ RESPONSES: dict[tuple[str, str], dict[str, dict]] = {
     ("post", "/anomaly/beneficiary-snapshots/compute"): {"200": {"schema": "ComputeBeneficiarySnapshotsResult", "description": "Beneficiary snapshot computation run completed."}},
     ("post", "/anomaly/funnel/compute"): {"200": {"schema": "ScoreFunnelDriftResult", "description": "Funnel drift scoring run completed."}},
     ("get", "/anomaly/beneficiary-snapshots"): {"200": {"schema": "BeneficiarySnapshotList", "description": "Page of beneficiary snapshots."}},
+    ("post", "/anomaly/isolation-forest/train"): {"200": {"schema": "IsolationForestTrainResult", "description": "Training run completed for both segments."}},
+    ("post", "/anomaly/clustering/compute"): {"200": {"schema": "ClusterAndScoreResult", "description": "Clustering run completed for both segments."}},
+    ("post", "/anomaly/final-score/compute"): {
+        "200": {"schema": "ComputeFinalScoreResult", "description": "Final aggregation run completed."},
+        "400": {"schema": "HTTPError", "description": "One or more targeted rows are missing isolation_forest_score -- run POST /anomaly/isolation-forest/train first."},
+    },
 }
 
 TAGS: dict[str, list[str]] = {
@@ -420,9 +478,11 @@ TAGS: dict[str, list[str]] = {
     "Identity Resolution (Step 4)": ["/resolve/parties", "/merchants", "/merchants/{merchant_id}", "/individuals", "/individuals/{individual_id}"],
     "Feature Store (Step 5, dashboard only)": ["/features/compute", "/features", "/features/{party_id}"],
     "Anomaly Detection - Behavioral Snapshots (Track A)": ["/anomaly/snapshots/compute", "/anomaly/snapshots"],
+    "Anomaly Detection - Isolation Forest (Track B)": ["/anomaly/isolation-forest/train"],
     "Anomaly Detection - Time-Series Drift (Track C)": ["/anomaly/timeseries/compute"],
     "Anomaly Detection - Funnel Account (Track A input + Track C)": ["/anomaly/beneficiary-snapshots/compute", "/anomaly/funnel/compute", "/anomaly/beneficiary-snapshots"],
-    "Anomaly Detection - Isolation Forest (Track B, pending merge)": ["/anomaly/isolation-forest/train"],
+    "Anomaly Detection - HDBSCAN Clustering (Track D)": ["/anomaly/clustering/compute"],
+    "Anomaly Detection - Final Aggregation (Section 8)": ["/anomaly/final-score/compute"],
 }
 
 
@@ -450,61 +510,28 @@ def _apply_responses(spec: dict) -> None:
             op.setdefault("responses", {})[status_code] = entry
 
 
-def _add_pending_isolation_forest_path(spec: dict) -> None:
-    """Not on main yet -- lives on origin/track-b-isolation-forest. Included
-    here so the frontend dev has the full contract to build against, but
-    clearly marked pending so nobody wires to it before it's merged."""
-    spec.setdefault("components", {}).setdefault("schemas", {})["TrainIsolationForestRequest"] = {
-        "type": "object",
-        "properties": {"tenant_bank_id": {"type": "string", "nullable": True}},
-    }
-    spec["paths"]["/anomaly/isolation-forest/train"] = {
-        "post": {
-            "tags": ["Anomaly Detection - Isolation Forest (Track B, pending merge)"],
-            "summary": "[PENDING MERGE] Train Isolation Forest",
-            "description": (
-                "**Not yet on `main`** -- lives on branch `track-b-isolation-forest`. "
-                "Shape confirmed from that branch's code, not guessed; will be added "
-                "to `main`'s live OpenAPI spec once merged. Do not build against this "
-                "until it's confirmed merged.\n\n"
-                "Trains one Isolation Forest per segment (MERCHANT, INDIVIDUAL) on "
-                "that segment's split=\"train\" EntitySnapshot rows, scores every row "
-                "in the segment, and writes EntitySnapshot.isolation_forest_score."
-            ),
-            "requestBody": {
-                "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TrainIsolationForestRequest"}}},
-            },
-            "responses": {
-                "200": {
-                    "description": "Training run completed for both segments.",
-                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/IsolationForestTrainResult"}}},
-                },
-                "422": {"description": "Invalid request body."},
-            },
-        },
-    }
-
-
 def build_spec() -> dict:
     spec = app.openapi()
     spec["info"]["description"] = (
         "Merchant Payment Intelligence Platform -- backend API for the frontend team.\n\n"
         "Covers Steps 1-5 (ingestion, identity resolution, feature store) plus the "
-        "anomaly-detection engine's Track A (behavioral snapshots), Track C "
-        "(time-series drift, including Funnel Account detection), and Funnel "
-        "Account's beneficiary-side input table. Endpoints marked **[PENDING MERGE]** "
-        "are written and tested on a teammate's branch but not yet on `main` -- "
-        "confirm merged before building against them.\n\n"
+        "complete Fraud/Anomaly Detection engine (Step 6a): Track A (behavioral "
+        "snapshots), Track B (Isolation Forest), Track C (time-series drift, "
+        "including Funnel Account detection), Track D (HDBSCAN clustering), and "
+        "the Section 8 final aggregation that combines all three model tracks "
+        "into one final_anomaly_score/anomaly_band per entity.\n\n"
         "All `/anomaly/*/compute` and `/resolve/parties` and `/features/compute` "
         "endpoints are POST, take an optional `{\"tenant_bank_id\": null}` body "
         "(omit or null = all tenants), and return a run-summary object, not the "
-        "computed rows themselves -- fetch those via the matching GET endpoint."
+        "computed rows themselves -- fetch those via the matching GET endpoint. "
+        "Run them in dependency order for a fresh tenant: snapshots/compute -> "
+        "isolation-forest/train + timeseries/compute + clustering/compute (any "
+        "order) -> final-score/compute."
     )
     spec["info"]["contact"] = {"name": "Vishaal", "email": "vishaal.g@tibilsolutions.com"}
     spec["servers"] = [{"url": "http://localhost:8000", "description": "Local dev (uvicorn app.main:app --reload)"}]
     spec.setdefault("components", {}).setdefault("schemas", {}).update(SCHEMAS)
     _apply_responses(spec)
-    _add_pending_isolation_forest_path(spec)
     _apply_tags(spec)
     return spec
 
