@@ -1,0 +1,1280 @@
+openapi: 3.1.0
+info:
+  title: Merchant Payment Intelligence - Ingestion Foundation
+  version: 0.1.0
+  description: 'Merchant Payment Intelligence Platform -- backend API for the frontend
+    team.
+
+
+    Covers Steps 1-5 (ingestion, identity resolution, feature store) plus the anomaly-detection
+    engine''s Track A (behavioral snapshots), Track C (time-series drift, including
+    Funnel Account detection), and Funnel Account''s beneficiary-side input table.
+    Endpoints marked **[PENDING MERGE]** are written and tested on a teammate''s branch
+    but not yet on `main` -- confirm merged before building against them.
+
+
+    All `/anomaly/*/compute` and `/resolve/parties` and `/features/compute` endpoints
+    are POST, take an optional `{"tenant_bank_id": null}` body (omit or null = all
+    tenants), and return a run-summary object, not the computed rows themselves --
+    fetch those via the matching GET endpoint.'
+  contact:
+    name: Vishaal
+    email: vishaal.g@tibilsolutions.com
+paths:
+  /ingest/file:
+    post:
+      summary: Ingest File
+      operationId: ingest_file_ingest_file_post
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_ingest_file_ingest_file_post'
+        required: true
+      responses:
+        '200':
+          description: File ingested (even if some rows failed -- check rows_failed/errors).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestFileResult'
+        '422':
+          description: Missing/invalid form fields.
+        '400':
+          description: Wrong file extension (must be .csv, .xlsx, or .xls).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPError'
+      tags:
+      - Ingestion (Steps 1-3)
+  /resolve/parties:
+    post:
+      summary: Resolve Parties Endpoint
+      operationId: resolve_parties_endpoint_resolve_parties_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolvePartiesRequest'
+              default: {}
+      responses:
+        '200':
+          description: Resolution run completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResolvePartiesResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      tags:
+      - Identity Resolution (Step 4)
+  /merchants:
+    get:
+      summary: List Merchants
+      operationId: list_merchants_merchants_get
+      parameters:
+      - name: tenant_bank_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Tenant Bank Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 20
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Page of merchants for this tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MerchantList'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      tags:
+      - Identity Resolution (Step 4)
+  /merchants/{merchant_id}:
+    get:
+      summary: Get Merchant
+      operationId: get_merchant_merchants__merchant_id__get
+      parameters:
+      - name: merchant_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Merchant Id
+      responses:
+        '200':
+          description: Merchant found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MerchantDetail'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '404':
+          description: No merchant with this merchant_id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPError'
+      tags:
+      - Identity Resolution (Step 4)
+  /individuals:
+    get:
+      summary: List Individuals
+      operationId: list_individuals_individuals_get
+      parameters:
+      - name: tenant_bank_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Tenant Bank Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 20
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Page of individuals for this tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndividualList'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      tags:
+      - Identity Resolution (Step 4)
+  /individuals/{individual_id}:
+    get:
+      summary: Get Individual
+      operationId: get_individual_individuals__individual_id__get
+      parameters:
+      - name: individual_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Individual Id
+      responses:
+        '200':
+          description: Individual found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndividualDetail'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '404':
+          description: No individual with this individual_id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPError'
+      tags:
+      - Identity Resolution (Step 4)
+  /features/compute:
+    post:
+      summary: Compute Features Endpoint
+      operationId: compute_features_endpoint_features_compute_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComputeFeaturesRequest'
+              default: {}
+      responses:
+        '200':
+          description: Feature computation run completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComputeFeaturesResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      tags:
+      - Feature Store (Step 5, dashboard only)
+  /features:
+    get:
+      summary: List Features
+      operationId: list_features_features_get
+      parameters:
+      - name: tenant_bank_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Tenant Bank Id
+      - name: party_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Party Type
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 20
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Page of party feature rollups.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartyFeaturesList'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      tags:
+      - Feature Store (Step 5, dashboard only)
+  /features/{party_id}:
+    get:
+      summary: Get Features
+      operationId: get_features_features__party_id__get
+      parameters:
+      - name: party_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Party Id
+      responses:
+        '200':
+          description: Features found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartyFeatures'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '404':
+          description: No features computed yet for this party_id -- run POST /features/compute
+            first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPError'
+      tags:
+      - Feature Store (Step 5, dashboard only)
+  /anomaly/snapshots/compute:
+    post:
+      summary: Compute Snapshots Endpoint
+      operationId: compute_snapshots_endpoint_anomaly_snapshots_compute_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComputeSnapshotsRequest'
+              default: {}
+      responses:
+        '200':
+          description: Snapshot computation run completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComputeSnapshotsResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      tags:
+      - Anomaly Detection - Behavioral Snapshots (Track A)
+  /anomaly/snapshots:
+    get:
+      summary: List Snapshots
+      operationId: list_snapshots_anomaly_snapshots_get
+      parameters:
+      - name: tenant_bank_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Tenant Bank Id
+      - name: party_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Party Id
+      - name: segment
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Segment
+      - name: split
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Split
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 50
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Page of behavioral snapshots.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntitySnapshotList'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      tags:
+      - Anomaly Detection - Behavioral Snapshots (Track A)
+  /anomaly/timeseries/compute:
+    post:
+      summary: Score Drift Endpoint
+      operationId: score_drift_endpoint_anomaly_timeseries_compute_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScoreDriftRequest'
+              default: {}
+      responses:
+        '200':
+          description: Time-series drift scoring run completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScoreDriftResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      tags:
+      - Anomaly Detection - Time-Series Drift (Track C)
+  /anomaly/beneficiary-snapshots/compute:
+    post:
+      summary: Compute Beneficiary Snapshots Endpoint
+      operationId: compute_beneficiary_snapshots_endpoint_anomaly_beneficiary_snapshots_compute_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComputeBeneficiarySnapshotsRequest'
+              default: {}
+      responses:
+        '200':
+          description: Beneficiary snapshot computation run completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComputeBeneficiarySnapshotsResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      tags:
+      - Anomaly Detection - Funnel Account (Track A input + Track C)
+  /anomaly/funnel/compute:
+    post:
+      summary: Score Funnel Drift Endpoint
+      operationId: score_funnel_drift_endpoint_anomaly_funnel_compute_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScoreFunnelDriftRequest'
+              default: {}
+      responses:
+        '200':
+          description: Funnel drift scoring run completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScoreFunnelDriftResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      tags:
+      - Anomaly Detection - Funnel Account (Track A input + Track C)
+  /anomaly/beneficiary-snapshots:
+    get:
+      summary: List Beneficiary Snapshots
+      operationId: list_beneficiary_snapshots_anomaly_beneficiary_snapshots_get
+      parameters:
+      - name: tenant_bank_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Tenant Bank Id
+      - name: beneficiary_key
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Beneficiary Key
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 50
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Page of beneficiary snapshots.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BeneficiarySnapshotList'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      tags:
+      - Anomaly Detection - Funnel Account (Track A input + Track C)
+  /anomaly/isolation-forest/train:
+    post:
+      tags:
+      - Anomaly Detection - Isolation Forest (Track B, pending merge)
+      summary: '[PENDING MERGE] Train Isolation Forest'
+      description: '**Not yet on `main`** -- lives on branch `track-b-isolation-forest`.
+        Shape confirmed from that branch''s code, not guessed; will be added to `main`''s
+        live OpenAPI spec once merged. Do not build against this until it''s confirmed
+        merged.
+
+
+        Trains one Isolation Forest per segment (MERCHANT, INDIVIDUAL) on that segment''s
+        split="train" EntitySnapshot rows, scores every row in the segment, and writes
+        EntitySnapshot.isolation_forest_score.'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrainIsolationForestRequest'
+      responses:
+        '200':
+          description: Training run completed for both segments.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IsolationForestTrainResult'
+        '422':
+          description: Invalid request body.
+components:
+  schemas:
+    Body_ingest_file_ingest_file_post:
+      properties:
+        tenant_bank_id:
+          type: string
+          title: Tenant Bank Id
+        rail_type:
+          type: string
+          title: Rail Type
+        settlement_stage:
+          $ref: '#/components/schemas/SettlementStage'
+        file:
+          type: string
+          contentMediaType: application/octet-stream
+          title: File
+      type: object
+      required:
+      - tenant_bank_id
+      - rail_type
+      - settlement_stage
+      - file
+      title: Body_ingest_file_ingest_file_post
+    ComputeBeneficiarySnapshotsRequest:
+      properties:
+        tenant_bank_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tenant Bank Id
+      type: object
+      title: ComputeBeneficiarySnapshotsRequest
+    ComputeFeaturesRequest:
+      properties:
+        tenant_bank_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tenant Bank Id
+      type: object
+      title: ComputeFeaturesRequest
+    ComputeSnapshotsRequest:
+      properties:
+        tenant_bank_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tenant Bank Id
+      type: object
+      title: ComputeSnapshotsRequest
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    ResolvePartiesRequest:
+      properties:
+        tenant_bank_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tenant Bank Id
+      type: object
+      title: ResolvePartiesRequest
+    ScoreDriftRequest:
+      properties:
+        tenant_bank_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tenant Bank Id
+      type: object
+      title: ScoreDriftRequest
+    ScoreFunnelDriftRequest:
+      properties:
+        tenant_bank_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tenant Bank Id
+      type: object
+      title: ScoreFunnelDriftRequest
+    SettlementStage:
+      type: string
+      enum:
+      - PRE
+      - POST
+      title: SettlementStage
+      description: 'Structural to the pipeline (drives snapshot_pre/snapshot_post
+        and
+
+        is_pre_settlement), unlike rail_type/tenant_bank_id which are free-form
+
+        config values so a new rail or bank never requires a code change.'
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
+    HTTPError:
+      type: object
+      properties:
+        detail:
+          type: string
+      required:
+      - detail
+    IngestFileResult:
+      type: object
+      description: Returned by POST /ingest/file.
+      properties:
+        ingestion_log_id:
+          type: integer
+        file_name:
+          type: string
+        tenant_bank_id:
+          type: string
+        rail_type:
+          type: string
+        settlement_stage:
+          type: string
+          enum:
+          - PRE
+          - POST
+        row_count:
+          type: integer
+        rows_mapped:
+          type: integer
+        rows_failed:
+          type: integer
+        errors: &id001
+          type: array
+          description: Per-row/per-party processing errors from this run. Empty on
+            a fully clean run.
+          items:
+            type: object
+            additionalProperties: true
+            example:
+              type: party_error
+              party_id: MER-0B69E2FD
+              error: description of what failed
+      required:
+      - ingestion_log_id
+      - file_name
+      - tenant_bank_id
+      - rail_type
+      - settlement_stage
+      - row_count
+      - rows_mapped
+      - rows_failed
+      - errors
+    ResolvePartiesResult:
+      type: object
+      description: Returned by POST /resolve/parties.
+      properties:
+        resolved_merchants:
+          type: integer
+        resolved_individuals:
+          type: integer
+        created_new_merchants:
+          type: integer
+        created_new_individuals:
+          type: integer
+        skipped_already_resolved:
+          type: integer
+        errors: *id001
+      required:
+      - resolved_merchants
+      - resolved_individuals
+      - created_new_merchants
+      - created_new_individuals
+      - skipped_already_resolved
+      - errors
+    MerchantSummary:
+      type: object
+      properties:
+        merchant_id:
+          type: string
+          example: MER-0B69E2FD
+        source_merchant_id:
+          type: string
+        tenant_bank_id:
+          type: string
+        legal_name: &id002
+          type: string
+          nullable: true
+        processor_name: *id002
+        onboarded_by: *id002
+        transaction_count:
+          type: integer
+      required:
+      - merchant_id
+      - source_merchant_id
+      - tenant_bank_id
+      - legal_name
+      - processor_name
+      - onboarded_by
+      - transaction_count
+    MerchantList:
+      type: object
+      properties:
+        total:
+          type: integer
+        merchants:
+          type: array
+          items:
+            $ref: '#/components/schemas/MerchantSummary'
+      required:
+      - total
+      - merchants
+    MerchantDetail:
+      type: object
+      properties:
+        merchant_id:
+          type: string
+          example: MER-0B69E2FD
+        source_merchant_id:
+          type: string
+        tenant_bank_id:
+          type: string
+        legal_name: *id002
+        trade_name: *id002
+        merchant_location: &id003
+          type: object
+          nullable: true
+          additionalProperties: true
+        merchant_account: *id003
+        processor_name: *id002
+        onboarded_by: *id002
+        created_at: &id004
+          type: string
+          format: date-time
+        transaction_count:
+          type: integer
+        rails_active:
+          type: array
+          items:
+            type: string
+          example:
+          - ACH
+          - WIRE
+      required:
+      - merchant_id
+      - source_merchant_id
+      - tenant_bank_id
+      - legal_name
+      - trade_name
+      - merchant_location
+      - merchant_account
+      - processor_name
+      - onboarded_by
+      - created_at
+      - transaction_count
+      - rails_active
+    IndividualSummary:
+      type: object
+      properties:
+        individual_id:
+          type: string
+          example: IND-B1F9C818
+        source_individual_id:
+          type: string
+        tenant_bank_id:
+          type: string
+        full_name: *id002
+        account_type: *id002
+        onboarded_by: *id002
+        transaction_count:
+          type: integer
+      required:
+      - individual_id
+      - source_individual_id
+      - tenant_bank_id
+      - full_name
+      - account_type
+      - onboarded_by
+      - transaction_count
+    IndividualList:
+      type: object
+      properties:
+        total:
+          type: integer
+        individuals:
+          type: array
+          items:
+            $ref: '#/components/schemas/IndividualSummary'
+      required:
+      - total
+      - individuals
+    IndividualDetail:
+      type: object
+      properties:
+        individual_id:
+          type: string
+          example: IND-B1F9C818
+        source_individual_id:
+          type: string
+        tenant_bank_id:
+          type: string
+        full_name: *id002
+        account_ref: *id002
+        account_type: *id002
+        onboarded_by: *id002
+        created_at: *id004
+        transaction_count:
+          type: integer
+        rails_active:
+          type: array
+          items:
+            type: string
+      required:
+      - individual_id
+      - source_individual_id
+      - tenant_bank_id
+      - full_name
+      - account_ref
+      - account_type
+      - onboarded_by
+      - created_at
+      - transaction_count
+      - rails_active
+    ComputeFeaturesResult:
+      type: object
+      description: Returned by POST /features/compute.
+      properties:
+        parties_computed:
+          type: integer
+        merchants_computed:
+          type: integer
+        individuals_computed:
+          type: integer
+        errors: *id001
+      required:
+      - parties_computed
+      - merchants_computed
+      - individuals_computed
+      - errors
+    PartyFeatures:
+      type: object
+      description: Step 5 dashboard/reporting rollup. NOT safe to use as anomaly-model
+        input -- several *_rate fields are rollups of the source's own pre-computed
+        risk flags, which the anomaly-detection engine (see the /anomaly/* endpoints)
+        exists to independently (re)derive.
+      properties:
+        party_id:
+          type: string
+        party_type:
+          type: string
+          enum:
+          - MERCHANT
+          - INDIVIDUAL
+        tenant_bank_id:
+          type: string
+        transaction_count:
+          type: integer
+        total_amount: &id005
+          type: number
+          nullable: true
+        avg_amount: *id005
+        rails_active: &id008
+          type: array
+          nullable: true
+          items: &id009
+            type: string
+        distinct_counterparties: &id007
+          type: integer
+          nullable: true
+        new_payee_risk_rate: *id005
+        funnel_account_rate: *id005
+        velocity_breach_rate: *id005
+        structuring_rate: *id005
+        network_timeout_rate: *id005
+        is_retry_rate: *id005
+        format_reject_rate: *id005
+        reconciliation_break_rate: *id005
+        first_seen_at: &id006
+          type: string
+          format: date-time
+          nullable: true
+        last_seen_at: *id006
+        computed_at: *id004
+      required:
+      - party_id
+      - party_type
+      - tenant_bank_id
+      - transaction_count
+      - computed_at
+    PartyFeaturesList:
+      type: object
+      properties:
+        total:
+          type: integer
+        features:
+          type: array
+          items:
+            $ref: '#/components/schemas/PartyFeatures'
+      required:
+      - total
+      - features
+    ComputeSnapshotsResult:
+      type: object
+      description: Returned by POST /anomaly/snapshots/compute.
+      properties:
+        parties_processed:
+          type: integer
+        merchant_snapshots_created:
+          type: integer
+        individual_snapshots_created:
+          type: integer
+        skipped_no_timestamp:
+          type: integer
+        errors: *id001
+      required:
+      - parties_processed
+      - merchant_snapshots_created
+      - individual_snapshots_created
+      - skipped_no_timestamp
+      - errors
+    EntitySnapshot:
+      type: object
+      description: Track A behavioral snapshot -- one row per (merchant, week) or
+        one TO_DATE row per individual. isolation_forest_score/cluster_id/cluster_changed/timeseries_drift_score/final_anomaly_score/anomaly_band
+        are null until the corresponding track has scored this row (Track B, D, C,
+        and the final aggregation step, respectively).
+      properties:
+        id:
+          type: integer
+        party_id:
+          type: string
+        party_type:
+          type: string
+          enum:
+          - MERCHANT
+          - INDIVIDUAL
+        tenant_bank_id:
+          type: string
+        segment:
+          type: string
+        window_type:
+          type: string
+          enum:
+          - WEEKLY
+          - TO_DATE
+        window_start: *id006
+        window_end: *id004
+        transaction_count:
+          type: integer
+        amount_total: *id005
+        amount_avg: *id005
+        amount_median: *id005
+        amount_std: *id005
+        unique_counterparties: *id007
+        new_counterparty_ratio: *id005
+        retry_ratio: *id005
+        avg_response_time_ms: *id005
+        timeout_ratio: *id005
+        format_reject_ratio: *id005
+        rails_used: *id008
+        account_age_days: *id005
+        split:
+          type: string
+          enum:
+          - train
+          - test
+        computed_at: *id004
+        isolation_forest_score:
+          type: number
+          nullable: true
+          description: 0-100, Track B
+        cluster_id:
+          type: integer
+          nullable: true
+          description: Track D
+        cluster_changed:
+          type: boolean
+          nullable: true
+          description: Track D
+        timeseries_drift_score:
+          type: number
+          nullable: true
+          description: 0-100, Track C
+        final_anomaly_score:
+          type: number
+          nullable: true
+          description: 0-100, aggregation step
+        anomaly_band:
+          type: string
+          nullable: true
+          enum:
+          - Normal
+          - Low-Medium
+          - High
+          - Critical
+          - null
+          description: Aggregation step
+      required:
+      - id
+      - party_id
+      - party_type
+      - tenant_bank_id
+      - segment
+      - window_type
+      - window_end
+      - transaction_count
+      - split
+      - computed_at
+    EntitySnapshotList:
+      type: object
+      properties:
+        total:
+          type: integer
+        snapshots:
+          type: array
+          items:
+            $ref: '#/components/schemas/EntitySnapshot'
+      required:
+      - total
+      - snapshots
+    ScoreDriftResult:
+      type: object
+      description: Returned by POST /anomaly/timeseries/compute.
+      properties:
+        scored:
+          type: integer
+        skipped_insufficient_history:
+          type: integer
+        parties_processed:
+          type: integer
+        errors: *id001
+      required:
+      - scored
+      - skipped_insufficient_history
+      - parties_processed
+      - errors
+    ComputeBeneficiarySnapshotsResult:
+      type: object
+      description: Returned by POST /anomaly/beneficiary-snapshots/compute.
+      properties:
+        beneficiaries_processed:
+          type: integer
+        snapshots_created:
+          type: integer
+        skipped_no_beneficiary_key:
+          type: integer
+        errors: *id001
+      required:
+      - beneficiaries_processed
+      - snapshots_created
+      - skipped_no_beneficiary_key
+      - errors
+    ScoreFunnelDriftResult:
+      type: object
+      description: Returned by POST /anomaly/funnel/compute.
+      properties:
+        scored:
+          type: integer
+        skipped_insufficient_history:
+          type: integer
+        beneficiaries_processed:
+          type: integer
+        errors: *id001
+      required:
+      - scored
+      - skipped_insufficient_history
+      - beneficiaries_processed
+      - errors
+    BeneficiarySnapshot:
+      type: object
+      description: Funnel Account detection input/output -- one row per (beneficiary,
+        week). Grouped by RECEIVER, not sender (see EntitySnapshot). funnel_drift_score
+        is null until Track C's /anomaly/funnel/compute has scored this row.
+      properties:
+        id:
+          type: integer
+        beneficiary_key:
+          type: string
+          description: payee_account_ref, or payee_name if no account ref was captured
+        beneficiary_name: *id002
+        tenant_bank_id:
+          type: string
+        window_start: *id004
+        window_end: *id004
+        transaction_count:
+          type: integer
+        amount_total: *id005
+        distinct_senders:
+          type: integer
+        distinct_new_senders:
+          type: integer
+        new_sender_ratio: *id005
+        sender_party_types:
+          type: array
+          nullable: true
+          items: *id009
+          example:
+          - MERCHANT
+          - INDIVIDUAL
+        funnel_drift_score:
+          type: number
+          nullable: true
+          description: 0-100, Track C
+        computed_at: *id004
+      required:
+      - id
+      - beneficiary_key
+      - tenant_bank_id
+      - window_start
+      - window_end
+      - transaction_count
+      - distinct_senders
+      - distinct_new_senders
+      - computed_at
+    BeneficiarySnapshotList:
+      type: object
+      properties:
+        total:
+          type: integer
+        snapshots:
+          type: array
+          items:
+            $ref: '#/components/schemas/BeneficiarySnapshot'
+      required:
+      - total
+      - snapshots
+    IsolationForestSegmentResult:
+      type: object
+      properties:
+        segment:
+          type: string
+          enum:
+          - MERCHANT
+          - INDIVIDUAL
+        tier_counts:
+          type: object
+          description: Count of parties in this segment at each observation-volume
+            tier.
+          properties:
+            SEGMENT_BASELINE:
+              type: integer
+            ENTITY_SPECIFIC:
+              type: integer
+            FULL_MODEL:
+              type: integer
+        parties:
+          type: integer
+          nullable: true
+        train_rows:
+          type: integer
+          nullable: true
+        rows_scored:
+          type: integer
+        score_min:
+          type: number
+          nullable: true
+        score_median:
+          type: number
+          nullable: true
+        score_max:
+          type: number
+          nullable: true
+      required:
+      - segment
+      - rows_scored
+    IsolationForestTrainResult:
+      type: object
+      description: Returned by POST /anomaly/isolation-forest/train. Keyed by segment.
+      properties:
+        MERCHANT:
+          $ref: '#/components/schemas/IsolationForestSegmentResult'
+        INDIVIDUAL:
+          $ref: '#/components/schemas/IsolationForestSegmentResult'
+      required:
+      - MERCHANT
+      - INDIVIDUAL
+    TrainIsolationForestRequest:
+      type: object
+      properties:
+        tenant_bank_id:
+          type: string
+          nullable: true
+servers:
+- url: http://localhost:8000
+  description: Local dev (uvicorn app.main:app --reload)
+tags:
+- name: Ingestion (Steps 1-3)
+- name: Identity Resolution (Step 4)
+- name: Feature Store (Step 5, dashboard only)
+- name: Anomaly Detection - Behavioral Snapshots (Track A)
+- name: Anomaly Detection - Time-Series Drift (Track C)
+- name: Anomaly Detection - Funnel Account (Track A input + Track C)
+- name: Anomaly Detection - Isolation Forest (Track B, pending merge)

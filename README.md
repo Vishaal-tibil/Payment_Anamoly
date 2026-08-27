@@ -72,6 +72,28 @@ python -m scripts.ingest_meridian_data
 python -c "from app.database import SessionLocal; from app.resolution import resolve_parties; from app.feature_store import compute_features; from app.anomaly.features import compute_snapshots; db = SessionLocal(); resolve_parties(db, tenant_bank_id='MERIDIAN_TRUST_BANK'); compute_features(db, tenant_bank_id='MERIDIAN_TRUST_BANK'); compute_snapshots(db, tenant_bank_id='MERIDIAN_TRUST_BANK'); db.close()"
 ```
 
+## API contract (for the frontend)
+
+[`docs/openapi.json`](docs/openapi.json) (and `docs/openapi.yaml`) is the OpenAPI 3.1
+spec for every endpoint on `main`, plus `POST /anomaly/isolation-forest/train`
+marked **[PENDING MERGE]** (written on `track-b-isolation-forest`, not merged
+yet — confirm before building against it). Unlike `GET /docs` (FastAPI's live
+Swagger UI, generated straight from the code), this file also documents
+response shapes and includes realistic examples, since none of the endpoints
+declare a `response_model` in code.
+
+Paste it into [editor.swagger.io](https://editor.swagger.io) or Postman/Insomnia's
+import to browse it, or point Swagger UI/Redoc at the file directly.
+
+Regenerate after any endpoint or response-shape change:
+```bash
+python -m scripts.generate_openapi
+```
+`app/main.py`'s actual routes/request bodies are the source of truth; the script
+only *adds* response schemas/examples on top of what FastAPI already generates
+correctly — it never hand-writes paths that don't exist in code (aside from the
+clearly-marked pending one above).
+
 ## What's already in the codebase, and where
 
 - `app/models.py` — the core pipeline schema: `canonical_events` (every transaction,
