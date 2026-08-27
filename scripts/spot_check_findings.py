@@ -1,7 +1,10 @@
-"""Manual precision/accuracy spot-check: for each of the 8 fraud/
-operational categories, pulls the single top-flagged item and prints the
-RAW canonical_events rows behind it, so a human can judge by eye whether
-the flag actually makes sense.
+"""Manual precision/accuracy spot-check: for each Fraud category (Section
+2.1 -- New Payee Risk, Funnel Account, Velocity, Structuring), pulls the
+single top-flagged item and prints the RAW canonical_events rows behind
+it, so a human can judge by eye whether the flag actually makes sense.
+
+Operational Issues (Section 2.2) are a deliberately separate, not-yet-
+built engine -- out of scope here.
 
 This is not a metric -- there's no ground-truth fraud label anywhere in
 this dataset (the whole point of this engine is unsupervised detection),
@@ -21,10 +24,6 @@ from app.anomaly.models import BeneficiarySnapshot, EntitySnapshot
 from app.anomaly.timeseries import score_drift
 from app.database import SessionLocal
 from app.models import CanonicalEvent
-from app.operational.duplicate_detection import detect_duplicate_payments
-from app.operational.format_rejection import detect_format_rejections
-from app.operational.settlement import detect_unsettled_batches
-from app.operational.timeout_detection import detect_timeouts
 
 DEFAULT_TENANT_BANK_ID = "MERIDIAN_TRUST_BANK"
 
@@ -143,43 +142,6 @@ def main() -> None:
             for w in all_weeks:
                 marker = " <-- FLAGGED" if w.id == top_drift.id else ""
                 print(f"    week={w.window_start.date()} txn_count={w.transaction_count} amount_total={w.amount_total:.2f}{marker}")
-
-        # --- Network Timeout ---
-        _header("NETWORK TIMEOUT -- top flagged transaction")
-        result = detect_timeouts(db, tenant_bank_id=tenant_bank_id)
-        if result["flagged"]:
-            top_t = result["flagged"][0]
-            print(f"  {top_t}")
-        else:
-            print("  (none flagged -- timeout_ratio is constant 0 in this dataset, expected)")
-
-        # --- Settlement ---
-        _header("SETTLEMENT -- top flagged batch")
-        result = detect_unsettled_batches(db, tenant_bank_id=tenant_bank_id)
-        if result["flagged"]:
-            top_batch = result["flagged"][0]
-            print(f"  {top_batch}")
-            events = db.query(CanonicalEvent).filter(CanonicalEvent.batch_id == top_batch["batch_id"]).all()
-            print("  raw transactions in this batch:")
-            for e in events:
-                print(f"    {e.transaction_id} | file_reached_settlement={e.file_reached_settlement} | expected={e.expected_settlement_at}")
-
-        # --- Duplicate Payment ---
-        _header("DUPLICATE PAYMENT -- top flagged pair")
-        result = detect_duplicate_payments(db, tenant_bank_id=tenant_bank_id)
-        if result["flagged"]:
-            pair = result["flagged"][0]
-            print(f"  {pair}")
-            for txn_id in (pair["transaction_id_1"], pair["transaction_id_2"]):
-                e = db.query(CanonicalEvent).filter_by(transaction_id=txn_id).first()
-                if e:
-                    _print_event(e)
-
-        # --- Format Rejection ---
-        _header("FORMAT REJECTION -- top flagged transaction")
-        result = detect_format_rejections(db, tenant_bank_id=tenant_bank_id)
-        if result["flagged"]:
-            print(f"  {result['flagged'][0]}")
     finally:
         db.close()
 
