@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from app.anomaly.models import EntitySnapshot
-from app.anomaly.timeseries import score_drift
+from app.anomaly.models import BeneficiarySnapshot, EntitySnapshot
+from app.anomaly.timeseries import score_drift, score_funnel_drift
 
 
 def _week(db, party_id, week_index, amount_total, transaction_count=5, new_counterparty_ratio=0.2, **overrides):
@@ -115,3 +115,108 @@ def test_tenant_isolation(db_session):
     result = score_drift(db_session, tenant_bank_id="KEYBANK")
 
     assert result["parties_processed"] == 1  # only MER-A
+
+
+def _beneficiary_week(db, beneficiary_key, week_index, distinct_senders, new_sender_ratio=0.2, **overrides):
+    start = datetime(2026, 5, 4, tzinfo=timezone.utc) + timedelta(weeks=week_index)  # 2026-05-04 is a Monday
+    defaults = dict(
+        beneficiary_key=beneficiary_key,
+        tenant_bank_id="KEYBANK",
+        window_start=start,
+        window_end=start + timedelta(days=7),
+        transaction_count=distinct_senders,
+        distinct_senders=distinct_senders,
+        distinct_new_senders=round(distinct_senders * new_sender_ratio),
+        new_sender_ratio=new_sender_ratio,
+    )
+    defaults.update(overrides)
+    row = BeneficiarySnapshot(**defaults)
+    db.add(row)
+    db.commit()
+    return row
+
+
+def test_funnel_first_two_weeks_have_no_baseline_yet(db_session):
+    _beneficiary_week(db_session, "ACCT-1", 0, distinct_senders=2)
+    _beneficiary_week(db_session, "ACCT-1", 1, distinct_senders=2)
+
+    result = score_funnel_drift(db_session)
+
+    rows = (
+        db_session.query(BeneficiarySnapshot)
+        .filter_by(beneficiary_key="ACCT-1")
+        .order_by(BeneficiarySnapshot.window_start)
+        .all()
+    )
+    assert rows[0].funnel_drift_score is None
+    assert rows[1].funnel_drift_score is None
+    assert result["skipped_insufficient_history"] == 2
+
+
+def test_funnel_stable_beneficiary_gets_low_drift_once_baseline_exists(db_session):
+    for i in range(5):
+        _beneficiary_week(db_session, "ACCT-STABLE", i, distinct_senders=2, new_sender_ratio=0.2)
+
+    score_funnel_drift(db_session)
+
+    rows = (
+        db_session.query(BeneficiarySnapshot)
+        .filter_by(beneficiary_key="ACCT-STABLE")
+        .order_by(BeneficiarySnapshot.window_start)
+        .all()
+    )
+    for row in rows[2:]:
+        assert row.funnel_drift_score == 0.0
+
+
+def test_funnel_burst_of_new_senders_scores_higher_than_stable_weeks(db_session):
+    for i in range(4):
+        _beneficiary_week(db_session, "ACCT-FUNNEL", i, distinct_senders=2, new_sender_ratio=0.2)
+    # Classic mule/funnel signature: a normally-quiet beneficiary suddenly
+    # draws many senders, nearly all of them new.
+    _beneficiary_week(db_session, "ACCT-FUNNEL", 4, distinct_senders=20, new_sender_ratio=0.95)
+
+    score_funnel_drift(db_session)
+
+    rows = (
+        db_session.query(BeneficiarySnapshot)
+        .filter_by(beneficiary_key="ACCT-FUNNEL")
+        .order_by(BeneficiarySnapshot.window_start)
+        .all()
+    )
+    burst_week = rows[4]
+    assert burst_week.funnel_drift_score == 100.0
+    assert rows[2].funnel_drift_score < burst_week.funnel_drift_score
+
+
+def test_funnel_rerun_is_idempotent(db_session):
+    for i in range(4):
+        _beneficiary_week(db_session, "ACCT-1", i, distinct_senders=2 + i)
+
+    first = score_funnel_drift(db_session)
+    second = score_funnel_drift(db_session)
+
+    assert first["scored"] == second["scored"]
+    rows_after_first = [
+        r.funnel_drift_score
+        for r in db_session.query(BeneficiarySnapshot).filter_by(beneficiary_key="ACCT-1").order_by(BeneficiarySnapshot.window_start)
+    ]
+    score_funnel_drift(db_session)
+    rows_after_third = [
+        r.funnel_drift_score
+        for r in db_session.query(BeneficiarySnapshot).filter_by(beneficiary_key="ACCT-1").order_by(BeneficiarySnapshot.window_start)
+    ]
+    assert rows_after_first == rows_after_third
+
+
+def test_funnel_tenant_isolation(db_session):
+    _beneficiary_week(db_session, "ACCT-A", 0, distinct_senders=2, tenant_bank_id="KEYBANK")
+    _beneficiary_week(db_session, "ACCT-A", 1, distinct_senders=2, tenant_bank_id="KEYBANK")
+    _beneficiary_week(db_session, "ACCT-A", 2, distinct_senders=2, tenant_bank_id="KEYBANK")
+    _beneficiary_week(db_session, "ACCT-B", 0, distinct_senders=2, tenant_bank_id="MTB")
+    _beneficiary_week(db_session, "ACCT-B", 1, distinct_senders=2, tenant_bank_id="MTB")
+    _beneficiary_week(db_session, "ACCT-B", 2, distinct_senders=2, tenant_bank_id="MTB")
+
+    result = score_funnel_drift(db_session, tenant_bank_id="KEYBANK")
+
+    assert result["beneficiaries_processed"] == 1  # only ACCT-A
