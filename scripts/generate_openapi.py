@@ -431,6 +431,61 @@ SCHEMAS: dict[str, dict] = {
         },
         "required": ["rows_scored", "band_counts"],
     },
+    "DetectDuplicatePaymentsResult": {
+        "type": "object",
+        "description": "Returned by POST /operations/duplicate-payments/compute.",
+        "properties": {
+            "groups_checked": {"type": "integer", "description": "Idempotency-key/retry-link groups with more than one transaction."},
+            "duplicate_payments_flagged": {"type": "integer", "description": "Of those groups, how many had 2+ transactions reach SETTLED."},
+        },
+        "required": ["groups_checked", "duplicate_payments_flagged"],
+    },
+    "ListFormatRejectionsResult": {
+        "type": "object",
+        "description": "Returned by POST /operations/format-rejections/compute.",
+        "properties": {"rejections_listed": {"type": "integer"}},
+        "required": ["rejections_listed"],
+    },
+    "ScoreFormatRejectionDriftResult": {
+        "type": "object",
+        "description": "Returned by POST /operations/format-rejections/spikes/compute.",
+        "properties": {
+            "weeks_scored": {"type": "integer", "description": "Merchant-weeks with enough prior history to score at all."},
+            "spikes_flagged": {"type": "integer", "description": "Of those, how many scored >= 60 (meaningfully elevated, not just scored)."},
+        },
+        "required": ["weeks_scored", "spikes_flagged"],
+    },
+    "OperationalIssue": {
+        "type": "object",
+        "description": (
+            "One detected operational issue instance. issue_type is one of "
+            "DUPLICATE_PAYMENT, FORMAT_REJECTION, FORMAT_REJECTION_SPIKE today "
+            "(NETWORK_TIMEOUT_SPIKE, BATCH_NOT_SETTLED pending another track). "
+            "severity_score is null for the two deterministic types (binary, "
+            "not scored) and 0-100 for FORMAT_REJECTION_SPIKE."
+        ),
+        "properties": {
+            "id": {"type": "integer"},
+            "issue_type": {"type": "string", "enum": ["DUPLICATE_PAYMENT", "FORMAT_REJECTION", "FORMAT_REJECTION_SPIKE", "NETWORK_TIMEOUT_SPIKE", "BATCH_NOT_SETTLED"]},
+            "tenant_bank_id": {"type": "string"},
+            "reference_type": {"type": "string", "enum": ["TRANSACTION", "BATCH", "PARTY"]},
+            "reference_id": {"type": "string", "description": "transaction_id, batch_id, or party_id depending on reference_type."},
+            "window_start": _NULLABLE_DATETIME,
+            "window_end": _NULLABLE_DATETIME,
+            "severity_score": _NULLABLE_NUMBER,
+            "details": _NULLABLE_OBJECT,
+            "detected_at": _DATETIME,
+        },
+        "required": ["id", "issue_type", "tenant_bank_id", "reference_type", "reference_id", "detected_at"],
+    },
+    "OperationalIssueList": {
+        "type": "object",
+        "properties": {
+            "total": {"type": "integer"},
+            "issues": {"type": "array", "items": {"$ref": "#/components/schemas/OperationalIssue"}},
+        },
+        "required": ["total", "issues"],
+    },
 }
 
 # --- Per-path response overrides ----------------------------------------
@@ -471,6 +526,10 @@ RESPONSES: dict[tuple[str, str], dict[str, dict]] = {
         "200": {"schema": "ComputeFinalScoreResult", "description": "Final aggregation run completed."},
         "400": {"schema": "HTTPError", "description": "One or more targeted rows are missing isolation_forest_score -- run POST /anomaly/isolation-forest/train first."},
     },
+    ("post", "/operations/duplicate-payments/compute"): {"200": {"schema": "DetectDuplicatePaymentsResult", "description": "Duplicate-payment detection run completed."}},
+    ("post", "/operations/format-rejections/compute"): {"200": {"schema": "ListFormatRejectionsResult", "description": "Format-rejection listing run completed."}},
+    ("post", "/operations/format-rejections/spikes/compute"): {"200": {"schema": "ScoreFormatRejectionDriftResult", "description": "Format-rejection rate drift scoring run completed."}},
+    ("get", "/operations/issues"): {"200": {"schema": "OperationalIssueList", "description": "Page of detected operational issues, most recent first."}},
 }
 
 TAGS: dict[str, list[str]] = {
@@ -483,6 +542,9 @@ TAGS: dict[str, list[str]] = {
     "Anomaly Detection - Funnel Account (Track A input + Track C)": ["/anomaly/beneficiary-snapshots/compute", "/anomaly/funnel/compute", "/anomaly/beneficiary-snapshots"],
     "Anomaly Detection - HDBSCAN Clustering (Track D)": ["/anomaly/clustering/compute"],
     "Anomaly Detection - Final Aggregation (Section 8)": ["/anomaly/final-score/compute"],
+    "Operational Issues - Duplicate Payment (Step 6b)": ["/operations/duplicate-payments/compute"],
+    "Operational Issues - Formatting Rejection (Step 6b)": ["/operations/format-rejections/compute", "/operations/format-rejections/spikes/compute"],
+    "Operational Issues - Issue Feed (Step 6b)": ["/operations/issues"],
 }
 
 
@@ -514,12 +576,16 @@ def build_spec() -> dict:
     spec = app.openapi()
     spec["info"]["description"] = (
         "Merchant Payment Intelligence Platform -- backend API for the frontend team.\n\n"
-        "Covers Steps 1-5 (ingestion, identity resolution, feature store) plus the "
+        "Covers Steps 1-5 (ingestion, identity resolution, feature store), the "
         "complete Fraud/Anomaly Detection engine (Step 6a): Track A (behavioral "
         "snapshots), Track B (Isolation Forest), Track C (time-series drift, "
         "including Funnel Account detection), Track D (HDBSCAN clustering), and "
         "the Section 8 final aggregation that combines all three model tracks "
-        "into one final_anomaly_score/anomaly_band per entity.\n\n"
+        "into one final_anomaly_score/anomaly_band per entity -- plus two of the "
+        "four Operational Issues engine (Step 6b) detectors: Duplicate Payment "
+        "and Formatting Rejection. The other two (Network/Processor Timeout, "
+        "Batch Never Settles) are being built separately and aren't reflected "
+        "here yet.\n\n"
         "All `/anomaly/*/compute` and `/resolve/parties` and `/features/compute` "
         "endpoints are POST, take an optional `{\"tenant_bank_id\": null}` body "
         "(omit or null = all tenants), and return a run-summary object, not the "
