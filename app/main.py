@@ -10,6 +10,14 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from . import models  # noqa: F401  -- registers tables on Base.metadata
+from .agent import models as agent_models  # noqa: F401  -- registers agent_narratives
+from .agent.models import AgentNarrative
+from .agent.narration import (
+    facts_for_entity_snapshot,
+    facts_for_operational_issue,
+    facts_for_reconciliation_break,
+    get_or_create_narrative,
+)
 from .anomaly import models as anomaly_models  # noqa: F401  -- registers anomaly_entity_snapshots
 from .anomaly.beneficiary_features import compute_beneficiary_snapshots
 from .anomaly.clustering import cluster_and_score
@@ -707,3 +715,90 @@ async def dashboard_rails(tenant_bank_id: str, db: Session = Depends(get_db)):
 @app.get("/dashboard/anomaly-detection-categories")
 async def dashboard_anomaly_detection_categories():
     return get_anomaly_detection_categories()
+
+
+# --- Agent (Step 7, LLM Agent Layer) ---
+# Never computes a new signal -- only narrates what the three engines
+# above already computed. See app/agent/narration.py's system prompt
+# for the rules against fabricating facts not present in the input.
+
+_FACT_BUILDERS = {
+    "operational_issue": (OperationalIssue, facts_for_operational_issue),
+    "reconciliation_break": (ReconciliationBreak, facts_for_reconciliation_break),
+    "fraud_anomaly": (EntitySnapshot, facts_for_entity_snapshot),
+}
+
+
+class NarrateRequest(BaseModel):
+    signal_type: str  # "operational_issue" | "reconciliation_break" | "fraud_anomaly"
+    signal_id: int  # the primary key of the OperationalIssue/ReconciliationBreak/EntitySnapshot row
+    tenant_bank_id: str
+    force: bool = False  # regenerate even if a cached narrative already exists
+
+
+def _narrative_summary(n: AgentNarrative) -> dict:
+    return {
+        "id": n.id,
+        "signal_type": n.signal_type,
+        "reference_id": n.reference_id,
+        "tenant_bank_id": n.tenant_bank_id,
+        "title": n.title,
+        "description": n.description,
+        "recommended_action": {
+            "title": n.recommended_action_title,
+            "description": n.recommended_action_description,
+        },
+        "model": n.model,
+        "generated_at": n.generated_at,
+    }
+
+
+@app.post("/agent/narrate")
+async def narrate_endpoint(body: NarrateRequest, db: Session = Depends(get_db)):
+    builder = _FACT_BUILDERS.get(body.signal_type)
+    if builder is None:
+        raise HTTPException(status_code=400, detail=f"signal_type must be one of {sorted(_FACT_BUILDERS)}")
+    model_cls, facts_fn = builder
+
+    row = (
+        db.query(model_cls)
+        .filter_by(id=body.signal_id, tenant_bank_id=body.tenant_bank_id)
+        .one_or_none()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No {body.signal_type} row with id={body.signal_id} for this tenant")
+
+    try:
+        narrative = await get_or_create_narrative(
+            db, body.signal_type, str(body.signal_id), body.tenant_bank_id, facts_fn(row), force=body.force,
+        )
+    except RuntimeError as exc:  # MISTRAL_API_KEY not set
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # Mistral API error, malformed response, etc.
+        raise HTTPException(status_code=502, detail=f"Narration failed: {exc}") from exc
+
+    return _narrative_summary(narrative)
+
+
+@app.get("/agent/narratives")
+async def list_narratives(
+    tenant_bank_id: str,
+    signal_type: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    base_query = db.query(AgentNarrative).filter(AgentNarrative.tenant_bank_id == tenant_bank_id)
+    if signal_type:
+        base_query = base_query.filter(AgentNarrative.signal_type == signal_type)
+    total = base_query.count()
+    rows = (
+        base_query.order_by(AgentNarrative.generated_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return {
+        "total": total,
+        "narratives": [_narrative_summary(n) for n in rows],
+    }

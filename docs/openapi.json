@@ -1485,6 +1485,165 @@
           "Dashboard (frontend)"
         ]
       }
+    },
+    "/agent/narrate": {
+      "post": {
+        "summary": "Narrate Endpoint",
+        "operationId": "narrate_endpoint_agent_narrate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NarrateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Narrative generated (or returned from cache).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentNarrative"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid signal_type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No row with that signal_id for this tenant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Mistral API call failed or returned a malformed/incomplete response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "MISTRAL_API_KEY is not configured on the server.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPError"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Agent (Step 7, Mistral)"
+        ]
+      }
+    },
+    "/agent/narratives": {
+      "get": {
+        "summary": "List Narratives",
+        "operationId": "list_narratives_agent_narratives_get",
+        "parameters": [
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          },
+          {
+            "name": "signal_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Signal Type"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page of cached narratives, most recently generated first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentNarrativeList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Agent (Step 7, Mistral)"
+        ]
+      }
     }
   },
   "components": {
@@ -1699,6 +1858,34 @@
         },
         "type": "object",
         "title": "ListFormatRejectionsRequest"
+      },
+      "NarrateRequest": {
+        "properties": {
+          "signal_type": {
+            "type": "string",
+            "title": "Signal Type"
+          },
+          "signal_id": {
+            "type": "integer",
+            "title": "Signal Id"
+          },
+          "tenant_bank_id": {
+            "type": "string",
+            "title": "Tenant Bank Id"
+          },
+          "force": {
+            "type": "boolean",
+            "title": "Force",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "signal_type",
+          "signal_id",
+          "tenant_bank_id"
+        ],
+        "title": "NarrateRequest"
       },
       "ResolvePartiesRequest": {
         "properties": {
@@ -3348,6 +3535,88 @@
           "subtitle",
           "items"
         ]
+      },
+      "AgentNarrative": {
+        "type": "object",
+        "description": "A cached LLM narrative for one signal. Generated once per (signal_type, signal_id, tenant_bank_id) unless force=True was passed -- every field is either a literal fact from the source row or Mistral's narration of those facts (never a new fact the detection engines didn't already compute; see app/agent/narration.py's system prompt).",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "\"{signal_type}:{tenant_bank_id}:{reference_id}\""
+          },
+          "signal_type": {
+            "type": "string",
+            "enum": [
+              "operational_issue",
+              "reconciliation_break",
+              "fraud_anomaly"
+            ]
+          },
+          "reference_id": {
+            "type": "string"
+          },
+          "tenant_bank_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "recommended_action": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "title",
+              "description"
+            ]
+          },
+          "model": {
+            "type": "string",
+            "example": "mistral-large-latest"
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "signal_type",
+          "reference_id",
+          "tenant_bank_id",
+          "title",
+          "description",
+          "recommended_action",
+          "model",
+          "generated_at"
+        ]
+      },
+      "AgentNarrativeList": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer"
+          },
+          "narratives": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentNarrative"
+            }
+          }
+        },
+        "required": [
+          "total",
+          "narratives"
+        ]
       }
     }
   },
@@ -3405,6 +3674,9 @@
     },
     {
       "name": "Dashboard (frontend)"
+    },
+    {
+      "name": "Agent (Step 7, Mistral)"
     }
   ]
 }

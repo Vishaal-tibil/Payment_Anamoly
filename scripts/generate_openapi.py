@@ -600,6 +600,40 @@ SCHEMAS: dict[str, dict] = {
         },
         "required": ["title", "subtitle", "items"],
     },
+    "AgentNarrative": {
+        "type": "object",
+        "description": (
+            "A cached LLM narrative for one signal. Generated once per (signal_type, "
+            "signal_id, tenant_bank_id) unless force=True was passed -- every field is "
+            "either a literal fact from the source row or Mistral's narration of those "
+            "facts (never a new fact the detection engines didn't already compute; see "
+            "app/agent/narration.py's system prompt)."
+        ),
+        "properties": {
+            "id": {"type": "string", "description": "\"{signal_type}:{tenant_bank_id}:{reference_id}\""},
+            "signal_type": {"type": "string", "enum": ["operational_issue", "reconciliation_break", "fraud_anomaly"]},
+            "reference_id": {"type": "string"},
+            "tenant_bank_id": {"type": "string"},
+            "title": {"type": "string"},
+            "description": {"type": "string"},
+            "recommended_action": {
+                "type": "object",
+                "properties": {"title": {"type": "string"}, "description": {"type": "string"}},
+                "required": ["title", "description"],
+            },
+            "model": {"type": "string", "example": "mistral-large-latest"},
+            "generated_at": _DATETIME,
+        },
+        "required": ["id", "signal_type", "reference_id", "tenant_bank_id", "title", "description", "recommended_action", "model", "generated_at"],
+    },
+    "AgentNarrativeList": {
+        "type": "object",
+        "properties": {
+            "total": {"type": "integer"},
+            "narratives": {"type": "array", "items": {"$ref": "#/components/schemas/AgentNarrative"}},
+        },
+        "required": ["total", "narratives"],
+    },
 }
 
 # --- Per-path response overrides ----------------------------------------
@@ -651,6 +685,14 @@ RESPONSES: dict[tuple[str, str], dict[str, dict]] = {
     ("get", "/dashboard/overview"): {"200": {"schema": "DashboardOverview", "description": "Live aggregate counts across all three engines for this tenant."}},
     ("get", "/dashboard/rails"): {"200": {"schema": "DashboardRails", "description": "Per-rail transaction/settlement/reconciliation stats, using the platform's real 5 rails."}},
     ("get", "/dashboard/anomaly-detection-categories"): {"200": {"schema": "AnomalyDetectionCategories", "description": "Static category tree describing what's detected and how."}},
+    ("post", "/agent/narrate"): {
+        "200": {"schema": "AgentNarrative", "description": "Narrative generated (or returned from cache)."},
+        "400": {"schema": "HTTPError", "description": "Invalid signal_type."},
+        "404": {"schema": "HTTPError", "description": "No row with that signal_id for this tenant."},
+        "502": {"schema": "HTTPError", "description": "Mistral API call failed or returned a malformed/incomplete response."},
+        "503": {"schema": "HTTPError", "description": "MISTRAL_API_KEY is not configured on the server."},
+    },
+    ("get", "/agent/narratives"): {"200": {"schema": "AgentNarrativeList", "description": "Page of cached narratives, most recently generated first."}},
 }
 
 TAGS: dict[str, list[str]] = {
@@ -670,6 +712,7 @@ TAGS: dict[str, list[str]] = {
     "Operational Issues - Issue Feed (Step 6b)": ["/operations/issues"],
     "Reconciliation (Step 6c)": ["/reconciliation/breaks/compute", "/reconciliation/breaks"],
     "Dashboard (frontend)": ["/dashboard/overview", "/dashboard/rails", "/dashboard/anomaly-detection-categories"],
+    "Agent (Step 7, Mistral)": ["/agent/narrate", "/agent/narratives"],
 }
 
 

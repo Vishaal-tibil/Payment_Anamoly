@@ -26,7 +26,7 @@ are sufficient at this volume.
 | 6b | **Operational Issues engine — this doc** | ✅ Built — all 4 issues |
 | 6c | **Reconciliation engine — this doc** | ✅ Built |
 | 6d | Payment Health engine | ⏳ Not started |
-| 7 | LLM Agent Layer (Mistral) | ⏳ Not started — `.env` scaffolding ready, awaiting API key |
+| 7 | **LLM Agent Layer (Mistral) — this doc** | ✅ Built |
 | 8 | Serving API | ⏳ Not started |
 
 ## Team & ownership — Fraud/Anomaly Detection engine (concluded)
@@ -118,6 +118,11 @@ constant 0.0 in this dataset today), and Reconciliation's output (520
 transactions checked, 30 confirmed breaks, 3 provisional variances). You do
 not need to run any ingestion or scoring pipeline — just pull `main` and
 start querying `EntitySnapshot` / `OperationalIssue` / `ReconciliationBreak`.
+(Step 7's `AgentNarrative` table is **not** bulk-precomputed like the rest --
+each real call takes ~2 minutes, so it's generated on demand via
+`POST /agent/narrate`, not seeded ahead of time. One real narrative is
+already committed, generated live against `ReconciliationBreak` id 1 while
+validating this feature -- query `GET /agent/narratives` to see it.)
 
 **Expect exactly 2 failures, not 0**, the first time you run `pytest -q` against
 this committed real data: `test_ingest_sample_pre_then_post_merges_into_one_row`
@@ -164,23 +169,81 @@ db.close()
 "
 ```
 
-## Step 7 (LLM Agent Layer, Mistral) — env scaffolding only, not built yet
+## Step 7 (LLM Agent Layer, Mistral) — built
 
-`app/config.py` reads `MISTRAL_API_KEY`/`MISTRAL_MODEL` from a local `.env`
-(`python-dotenv` + `mistralai` are already in `requirements.txt`). No agent
-code exists yet -- this is only the plumbing so a real key can be dropped in
-the moment it's available, without a separate setup step later.
+`app/agent/` -- turns one already-detected signal (an `OperationalIssue`, a
+`ReconciliationBreak`, or a flagged `EntitySnapshot`) into a short narrative +
+recommended action, on demand. This is the piece the frontend's
+`NO_RECOMMENDATION_ACTION` placeholder ("no automated recommendation yet")
+was waiting on.
 
+**Setup:**
 ```bash
 cp .env.example .env   # then fill in MISTRAL_API_KEY (get one at https://console.mistral.ai/)
 ```
+`.env` is gitignored -- never commit real keys. `MISTRAL_MODEL` defaults to
+`mistral-large-latest`. Verified against the actually-installed
+`mistralai==2.9.4` SDK before writing any code against it (its real entry
+point is `mistralai.client.Mistral`, not the top-level `mistralai` package --
+that's a namespace package with no `__init__.py` in this version).
 
-`.env` is gitignored -- never commit real keys; `.env.example` (committed) is
-the template. Before writing the agent module itself, real design decisions
-are still open: trigger model (batch job vs. on-demand), whether it narrates
-just the fraud/anomaly engine's output or Operational Issues/Reconciliation
-too, and exact prompt/output shape for the frontend's incident narratives
-(see the frontend integration notes below for what that UI expects).
+**Design, and why:**
+- **Trigger model: on-demand, not a background job.** Matches every other
+  endpoint in this platform (`POST /.../compute`, called explicitly) --
+  there's no scheduler/cron infrastructure anywhere in this codebase, and
+  adding one just for this would be new infrastructure for a single feature.
+- **Scope: all three engines, one endpoint.** `POST /agent/narrate` dispatches
+  on `signal_type` (`operational_issue` | `reconciliation_break` |
+  `fraud_anomaly`) to the matching fact-builder, so it's one integration
+  point for the frontend regardless of which engine produced the signal.
+- **Grounding is the entire point of this module.** The system prompt in
+  `app/agent/narration.py` is written as strictly as every deterministic
+  detector elsewhere in this platform: use *only* the given facts, never
+  invent a number/date/cause not present in the input, and say "insufficient
+  detail" rather than fabricate a plausible-sounding recommendation. This is
+  the one place in the whole system where fabrication risk is real (every
+  other engine is deterministic code), so the discipline this project has
+  held everywhere else has to be enforced explicitly here, in the prompt.
+- **Cached, not regenerated per view.** `AgentNarrative` (one row per
+  `(signal_type, signal_id, tenant_bank_id)`, upserted unless
+  `force=True`) -- same "compute once, persist, serve many" shape as every
+  other engine's output table. This isn't just an optimization: **a real
+  call from this environment took 124.7 seconds end to end** (confirmed
+  live against real Meridian data, not assumed) -- regenerating per page
+  view would be both slow and expensive.
+- **Async, not sync.** That same 124.7s number is why `narrate()`/
+  `get_or_create_narrative()` are `async def`, calling the SDK's
+  `chat.complete_async` rather than `chat.complete`. A synchronous call of
+  that length inside `main.py`'s `async def` endpoint would block the whole
+  FastAPI event loop for its entire duration -- confirmed this would have
+  been a real bug, not a theoretical one, by firing a concurrent
+  `GET /dashboard/overview` while a real narrate call was in flight: it
+  returned in 0.016s, proving the event loop stayed free the whole time.
+
+**Endpoints**: `POST /agent/narrate` (body: `signal_type`, `signal_id` --
+the row's own primary key, not its `reference_id` column --,
+`tenant_bank_id`, `force`), `GET /agent/narratives`. 502 if the Mistral call
+fails or returns a malformed response, 503 if `MISTRAL_API_KEY` isn't set,
+404 if `signal_id` doesn't exist for that tenant.
+
+**Real example** (live call against `ReconciliationBreak` id 1, real Meridian
+data, unedited):
+```json
+{
+  "title": "Cheque Reconciliation Break Detected",
+  "description": "A confirmed reconciliation break of 19.40 was identified for cheque transaction CHK-MTB-100029, resulting in a variance between recorded and expected amounts.",
+  "recommended_action": {
+    "title": "Investigate cheque transaction discrepancy",
+    "description": "Review the cheque processing logs and ledger entries for transaction CHK-MTB-100029 to identify the source of the variance."
+  }
+}
+```
+Every specific in that output (the transaction id, the $19.40 variance) is a
+literal value from the input facts -- nothing invented.
+
+**Not built**: no frontend wiring yet (the ~2-minute latency makes an
+eager fetch-on-render a bad fit -- needs an explicit "Generate" button with
+a loading state, not automatic loading like the rest of the dashboard).
 
 ## API contract (for the frontend)
 
@@ -255,6 +318,9 @@ correctly.
 - `app/dashboard.py` — not an engine, no output table. Read-only views over
   the three engines' output, built specifically for the frontend (see
   "Connecting the frontend" above).
+- `app/agent/` — Step 7, the LLM Agent Layer (complete). `models.py` has
+  `AgentNarrative`; `narration.py` has the fact-builders, the system prompt,
+  and the cached/async narration logic. See its own section below.
 - `unsupervised-anomaly-detection-knowledge.md` (repo root) — the design doc the
   fraud/anomaly engine follows: profile-based, unsupervised, Isolation Forest +
   HDBSCAN + time-series, scored 0–100 per entity. **Read this in full before
@@ -713,11 +779,12 @@ combined output. Next up: Step 6b (Operational Issues, above), then Steps 7–8.
 ## Running tests
 
 ```bash
-pytest -q                                        # full suite, 129 tests total. Against the committed real data: 127
+pytest -q                                        # full suite, 137 tests total. Against the committed real data: 135
                                                   # passing, 2 expected KEYBANK failures (see Setup above). On a clean
-                                                  # DB reset: 128 passing, 1 expected failure (needs real Meridian data --
+                                                  # DB reset: 136 passing, 1 expected failure (needs real Meridian data --
                                                   # test_train_endpoint_scores_real_meridian_data). Never both states at
-                                                  # once; that's expected, not a regression either way.
+                                                  # once; that's expected, not a regression either way. (test_agent.py's
+                                                  # tests all mock the Mistral call -- no real API cost/latency in the suite.)
 pytest tests/test_anomaly_features.py -v         # Track A
 pytest tests/test_isolation_forest.py -v         # Track B + final aggregation
 pytest tests/test_timeseries.py -v               # Track C (merchant drift + Funnel Account drift)
@@ -727,4 +794,5 @@ pytest tests/test_format_rejection.py -v         # Operational Issues: Formattin
 pytest tests/test_operational_issues.py -v       # Operational Issues: Batch Never Settles + Network/Processor Timeout
 pytest tests/test_reconciliation.py -v           # Reconciliation
 pytest tests/test_dashboard.py -v                # Dashboard aggregation views (frontend)
+pytest tests/test_agent.py -v                    # Step 7 LLM Agent Layer (Mistral calls mocked)
 ```
