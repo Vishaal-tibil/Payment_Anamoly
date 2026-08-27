@@ -120,9 +120,10 @@ not need to run any ingestion or scoring pipeline — just pull `main` and
 start querying `EntitySnapshot` / `OperationalIssue` / `ReconciliationBreak`.
 (Step 7's `AgentNarrative` table is **not** bulk-precomputed like the rest --
 each real call takes ~2 minutes, so it's generated on demand via
-`POST /agent/narrate`, not seeded ahead of time. One real narrative is
-already committed, generated live against `ReconciliationBreak` id 1 while
-validating this feature -- query `GET /agent/narratives` to see it.)
+`POST /agent/narrate`, not seeded ahead of time. 7 real narratives across all
+three signal types are already committed, generated live while validating
+this feature and fixing its grounding bug -- query `GET /agent/narratives`
+to see them.)
 
 **Expect exactly 2 failures, not 0**, the first time you run `pytest -q` against
 this committed real data: `test_ingest_sample_pre_then_post_merges_into_one_row`
@@ -241,14 +242,33 @@ data, unedited):
 Every specific in that output (the transaction id, the $19.40 variance) is a
 literal value from the input facts -- nothing invented.
 
-**Not built**: no frontend wiring yet (the ~2-minute latency makes an
-eager fetch-on-render a bad fit -- needs an explicit "Generate" button with
-a loading state, not automatic loading like the rest of the dashboard).
+**Grounding bug, found and fixed**: live testing surfaced a real failure mode
+the prompt alone didn't prevent -- on `fraud_anomaly` facts (`party_id`
+`MER-20A71A0D`, `$243,864.42` over 4 transactions), Mistral came back with the
+identifier silently truncated to `MER-20A71A` and vague filler ("totaling the
+given amount", "the specified time window") in place of the real numbers it
+was given. A truncated identifier is a real correctness risk here (someone
+could look up the wrong entity), so the fix isn't just a stronger prompt --
+`narrate()` now runs a programmatic post-generation check that the signal's
+real identifier appears verbatim in the output, and raises (never caches)
+if it doesn't. Same "verify, don't just trust the source" pattern this
+project already applies elsewhere (duplicate-payment idempotency checks,
+reconciliation's dual break/variance checks). Regenerating the same
+`fraud_anomaly` signal after the fix: `"High fraud anomaly for MER-20A71A0D
+(4 txns, $243,864.42)"` -- full identifier, real numbers, no filler.
+Regression tests for this exact case are in `tests/test_agent.py`.
+
+**Frontend wiring**: built. `Payment_Anamoly_Frontend`'s Incidents Centre
+calls `POST /agent/narrate` via `src/api/useNarrative.js` -- an explicit
+user-triggered hook, not fetch-on-mount, since the ~2-minute latency makes
+an eager auto-load a bad fit. Shows a distinct loading state while the call
+is in flight and a "generate one" prompt beforehand, never a stale "not
+built yet" placeholder next to a live button.
 
 ## API contract (for the frontend)
 
 [`docs/openapi.json`](docs/openapi.json) (and `docs/openapi.yaml`) is the OpenAPI
-3.1 spec for all 29 endpoints on `main` -- the complete fraud/anomaly engine
+3.1 spec for all 31 endpoints on `main` -- the complete fraud/anomaly engine
 (Tracks A–D + final aggregation), Operational Issues (all 4 issue types),
 Reconciliation, and the `/dashboard/*` endpoints built specifically for the
 frontend (see below). Unlike `GET /docs` (FastAPI's live Swagger UI, generated
@@ -779,9 +799,9 @@ combined output. Next up: Step 6b (Operational Issues, above), then Steps 7–8.
 ## Running tests
 
 ```bash
-pytest -q                                        # full suite, 137 tests total. Against the committed real data: 135
+pytest -q                                        # full suite, 142 tests total. Against the committed real data: 140
                                                   # passing, 2 expected KEYBANK failures (see Setup above). On a clean
-                                                  # DB reset: 136 passing, 1 expected failure (needs real Meridian data --
+                                                  # DB reset: 141 passing, 1 expected failure (needs real Meridian data --
                                                   # test_train_endpoint_scores_real_meridian_data). Never both states at
                                                   # once; that's expected, not a regression either way. (test_agent.py's
                                                   # tests all mock the Mistral call -- no real API cost/latency in the suite.)
