@@ -554,6 +554,8 @@ SCHEMAS: dict[str, dict] = {
             "settlement_rate": _NULLABLE_NUMBER,
             "total_merchants": {"type": "integer"},
             "total_individuals": {"type": "integer"},
+            "date_range_start": {**_NULLABLE_STRING, "description": "Earliest transaction_occurred_at for this tenant (ISO 8601), or null if no transactions have a timestamp."},
+            "date_range_end": {**_NULLABLE_STRING, "description": "Latest transaction_occurred_at for this tenant (ISO 8601)."},
             "anomaly_band_counts": {"type": "object", "additionalProperties": {"type": "integer"}, "example": {"Normal": 98, "Low-Medium": 68, "High": 6, "Critical": 2}},
             "operational_issue_counts": {"type": "object", "additionalProperties": {"type": "integer"}, "example": {"DUPLICATE_PAYMENT": 18, "FORMAT_REJECTION": 19}},
             "reconciliation_break_counts": {"type": "object", "additionalProperties": {"type": "integer"}, "example": {"CONFIRMED_BREAK": 30, "PROVISIONAL_VARIANCE": 3}},

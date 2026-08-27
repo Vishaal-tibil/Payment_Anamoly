@@ -3386,6 +3386,16 @@
           "total_individuals": {
             "type": "integer"
           },
+          "date_range_start": {
+            "type": "string",
+            "nullable": true,
+            "description": "Earliest transaction_occurred_at for this tenant (ISO 8601), or null if no transactions have a timestamp."
+          },
+          "date_range_end": {
+            "type": "string",
+            "nullable": true,
+            "description": "Latest transaction_occurred_at for this tenant (ISO 8601)."
+          },
           "anomaly_band_counts": {
             "type": "object",
             "additionalProperties": {

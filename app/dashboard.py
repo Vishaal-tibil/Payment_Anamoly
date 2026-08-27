@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .anomaly.models import EntitySnapshot
@@ -33,6 +34,15 @@ def get_overview(db: Session, tenant_bank_id: str) -> dict[str, Any]:
     )
     total_merchants = db.query(Merchant).filter_by(tenant_bank_id=tenant_bank_id).count()
     total_individuals = db.query(Individual).filter_by(tenant_bank_id=tenant_bank_id).count()
+
+    # transaction_occurred_at is a String/ISO8601 column (see CanonicalEvent's
+    # own docstring for why) -- MIN/MAX on it is still correct chronological
+    # ordering since ISO8601's lexicographic order matches time order.
+    date_range_start, date_range_end = (
+        db.query(func.min(CanonicalEvent.transaction_occurred_at), func.max(CanonicalEvent.transaction_occurred_at))
+        .filter(CanonicalEvent.tenant_bank_id == tenant_bank_id, CanonicalEvent.transaction_occurred_at.isnot(None))
+        .one()
+    )
 
     anomaly_band_counts: dict[str, int] = defaultdict(int)
     for (band,) in db.query(EntitySnapshot.anomaly_band).filter_by(tenant_bank_id=tenant_bank_id).all():
@@ -53,6 +63,8 @@ def get_overview(db: Session, tenant_bank_id: str) -> dict[str, Any]:
         "settlement_rate": (settled_transactions / total_transactions) if total_transactions else None,
         "total_merchants": total_merchants,
         "total_individuals": total_individuals,
+        "date_range_start": date_range_start,
+        "date_range_end": date_range_end,
         "anomaly_band_counts": dict(anomaly_band_counts),
         "operational_issue_counts": dict(operational_issue_counts),
         "reconciliation_break_counts": dict(reconciliation_break_counts),
