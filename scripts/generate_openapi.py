@@ -545,6 +545,61 @@ SCHEMAS: dict[str, dict] = {
         },
         "required": ["total", "breaks"],
     },
+    "DashboardOverview": {
+        "type": "object",
+        "description": "Returned by GET /dashboard/overview. A live read over the three engines' already-computed output -- nothing here is stored, nothing is an estimate.",
+        "properties": {
+            "total_transactions": {"type": "integer"},
+            "settled_transactions": {"type": "integer"},
+            "settlement_rate": _NULLABLE_NUMBER,
+            "total_merchants": {"type": "integer"},
+            "total_individuals": {"type": "integer"},
+            "anomaly_band_counts": {"type": "object", "additionalProperties": {"type": "integer"}, "example": {"Normal": 98, "Low-Medium": 68, "High": 6, "Critical": 2}},
+            "operational_issue_counts": {"type": "object", "additionalProperties": {"type": "integer"}, "example": {"DUPLICATE_PAYMENT": 18, "FORMAT_REJECTION": 19}},
+            "reconciliation_break_counts": {"type": "object", "additionalProperties": {"type": "integer"}, "example": {"CONFIRMED_BREAK": 30, "PROVISIONAL_VARIANCE": 3}},
+        },
+        "required": ["total_transactions", "settled_transactions", "total_merchants", "total_individuals", "anomaly_band_counts", "operational_issue_counts", "reconciliation_break_counts"],
+    },
+    "DashboardRailStat": {
+        "type": "object",
+        "properties": {
+            "rail_type": {"type": "string", "enum": ["ACH", "WIRE", "CARD", "FEDNOW", "CHEQUE"], "description": "The platform's 5 real rails -- never RTP/SWIFT/CHIPS/Fedwire, which don't exist in this schema."},
+            "transaction_count": {"type": "integer"},
+            "settled_count": {"type": "integer"},
+            "settlement_rate": _NULLABLE_NUMBER,
+            "total_amount": _NULLABLE_NUMBER,
+            "reconciliation_break_count": {"type": "integer"},
+        },
+        "required": ["rail_type", "transaction_count", "settled_count", "reconciliation_break_count"],
+    },
+    "DashboardRails": {
+        "type": "object",
+        "description": "Returned by GET /dashboard/rails.",
+        "properties": {"rails": {"type": "array", "items": {"$ref": "#/components/schemas/DashboardRailStat"}}},
+        "required": ["rails"],
+    },
+    "AnomalyDetectionCategoryNode": {
+        "type": "object",
+        "description": "Recursive: a node may have `categories` (children) or not (a leaf).",
+        "properties": {
+            "id": {"type": "string"},
+            "code": {"type": "string", "nullable": True},
+            "title": {"type": "string"},
+            "description": {"type": "string"},
+            "categories": {"type": "array", "items": {"$ref": "#/components/schemas/AnomalyDetectionCategoryNode"}},
+        },
+        "required": ["id", "title", "description"],
+    },
+    "AnomalyDetectionCategories": {
+        "type": "object",
+        "description": "Returned by GET /dashboard/anomaly-detection-categories. Static -- documents what the platform detects and how, not a DB query. Read-only; no write-back endpoint exists.",
+        "properties": {
+            "title": {"type": "string"},
+            "subtitle": {"type": "string"},
+            "items": {"type": "array", "items": {"$ref": "#/components/schemas/AnomalyDetectionCategoryNode"}},
+        },
+        "required": ["title", "subtitle", "items"],
+    },
 }
 
 # --- Per-path response overrides ----------------------------------------
@@ -593,6 +648,9 @@ RESPONSES: dict[tuple[str, str], dict[str, dict]] = {
     ("get", "/operations/issues"): {"200": {"schema": "OperationalIssueList", "description": "Page of detected operational issues, most recent first."}},
     ("post", "/reconciliation/breaks/compute"): {"200": {"schema": "DetectReconciliationBreaksResult", "description": "Reconciliation break detection run completed."}},
     ("get", "/reconciliation/breaks"): {"200": {"schema": "ReconciliationBreakList", "description": "Page of detected reconciliation breaks, most recent first."}},
+    ("get", "/dashboard/overview"): {"200": {"schema": "DashboardOverview", "description": "Live aggregate counts across all three engines for this tenant."}},
+    ("get", "/dashboard/rails"): {"200": {"schema": "DashboardRails", "description": "Per-rail transaction/settlement/reconciliation stats, using the platform's real 5 rails."}},
+    ("get", "/dashboard/anomaly-detection-categories"): {"200": {"schema": "AnomalyDetectionCategories", "description": "Static category tree describing what's detected and how."}},
 }
 
 TAGS: dict[str, list[str]] = {
@@ -611,6 +669,7 @@ TAGS: dict[str, list[str]] = {
     "Operational Issues - Network/Processor Timeout (Step 6b)": ["/operations/timeout/compute"],
     "Operational Issues - Issue Feed (Step 6b)": ["/operations/issues"],
     "Reconciliation (Step 6c)": ["/reconciliation/breaks/compute", "/reconciliation/breaks"],
+    "Dashboard (frontend)": ["/dashboard/overview", "/dashboard/rails", "/dashboard/anomaly-detection-categories"],
 }
 
 

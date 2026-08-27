@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from enum import Enum
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -16,6 +17,7 @@ from .anomaly.features import compute_snapshots
 from .anomaly.isolation_forest import compute_final_score, train_and_score
 from .anomaly.models import BeneficiarySnapshot, EntitySnapshot
 from .anomaly.timeseries import score_drift, score_funnel_drift
+from .dashboard import get_anomaly_detection_categories, get_overview, get_rail_stats
 from .database import Base, SessionLocal, engine, get_db
 from .feature_store import compute_features
 from .ingestion import process_file
@@ -53,7 +55,20 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Merchant Payment Intelligence - Ingestion Foundation", lifespan=lifespan)
+app = FastAPI(title="Merchant Payment Intelligence Platform", lifespan=lifespan)
+
+# Local-dev frontend (Vite) origins. Pilot system, no auth yet -- tighten
+# this to a real allowlist before any non-local deployment.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173", "http://127.0.0.1:5173",
+        "http://localhost:4173", "http://127.0.0.1:4173",  # vite preview
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.post("/ingest/file")
@@ -673,3 +688,23 @@ async def list_reconciliation_breaks(
         "total": total,
         "breaks": [_reconciliation_break_summary(r) for r in rows],
     }
+
+
+# --- Dashboard (frontend) ---
+# Read-only aggregation views over the three engines above -- see
+# app/dashboard.py. No output table of its own; nothing here computes
+# anything new, it only reshapes what's already been computed.
+
+@app.get("/dashboard/overview")
+async def dashboard_overview(tenant_bank_id: str, db: Session = Depends(get_db)):
+    return get_overview(db, tenant_bank_id)
+
+
+@app.get("/dashboard/rails")
+async def dashboard_rails(tenant_bank_id: str, db: Session = Depends(get_db)):
+    return get_rail_stats(db, tenant_bank_id)
+
+
+@app.get("/dashboard/anomaly-detection-categories")
+async def dashboard_anomaly_detection_categories():
+    return get_anomaly_detection_categories()
