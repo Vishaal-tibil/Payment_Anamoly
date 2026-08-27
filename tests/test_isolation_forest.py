@@ -5,10 +5,12 @@ import statistics
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from fastapi.testclient import TestClient
 
-from app.anomaly.isolation_forest import train_and_score
+from app.anomaly.isolation_forest import compute_final_score, train_and_score
 from app.anomaly.models import EntitySnapshot
 from app.database import SessionLocal
+from app.main import app
 
 
 def _make_snapshot(db, **overrides):
@@ -225,6 +227,84 @@ def test_synthetic_injection_detection_rate(db_session):
     # top of the ranking on a population it wasn't tuned to.
     assert recall_at_10 >= 0.7
     assert statistics.median(injected_scores) > statistics.median(normal_scores)
+
+
+def test_train_endpoint_scores_real_meridian_data():
+    """Non-destructive against the shared file-backed db -- unlike the
+    ingestion endpoints, this only rescores existing EntitySnapshot rows
+    by id, never inserts/deletes, so it's safe to hit through the real
+    TestClient(app) the same way test_api_integration.py does.
+    """
+    with TestClient(app) as client:
+        resp = client.post("/anomaly/isolation-forest/train", json={"tenant_bank_id": "MERIDIAN_TRUST_BANK"})
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+
+        assert set(body.keys()) == {"MERCHANT", "INDIVIDUAL"}
+        for segment_result in body.values():
+            assert segment_result["rows_scored"] > 0
+            assert 0.0 <= segment_result["score_min"]
+            assert segment_result["score_max"] <= 100.0
+
+    db = SessionLocal()
+    try:
+        rows = db.query(EntitySnapshot).filter_by(tenant_bank_id="MERIDIAN_TRUST_BANK").all()
+        assert all(r.isolation_forest_score is not None for r in rows)
+    finally:
+        db.close()
+
+
+def test_compute_final_score_weights_the_three_signals(db_session):
+    # isolation_forest_score set directly (bypassing train_and_score) so
+    # the weighted-sum arithmetic can be checked exactly, independent of
+    # what IsolationForest itself would produce.
+    row = _make_snapshot(db_session, party_id="MER-1", isolation_forest_score=80.0, cluster_changed=True, timeseries_drift_score=60.0)
+
+    compute_final_score(db_session, tenant_bank_id="KEYBANK")
+
+    db_session.refresh(row)
+    # Literal README formula: IF and timeseries are 0-100, but
+    # clustering_signal is the literal 0/1 the README specifies -- NOT
+    # rescaled to 0/100 here, since that would be inventing a design
+    # decision rather than following the spec. Flagged separately: this
+    # means max possible final_score is 0.40*100 + 0.25*1 + 0.35*100 =
+    # 75.25, so "Critical" (80-100) is unreachable as currently specified.
+    expected = 0.40 * 80.0 + 0.25 * 1.0 + 0.35 * 60.0  # = 53.25
+    assert row.final_anomaly_score == pytest.approx(expected)
+    assert row.anomaly_band == "Low-Medium"
+
+
+def test_null_clustering_and_timeseries_treated_as_zero_contribution(db_session):
+    # Real data today: every row's cluster_changed/timeseries_drift_score
+    # is None (Track C/D not merged). This must not crash or skip the
+    # row -- it should fall back to isolation_forest_score alone.
+    row = _make_snapshot(db_session, party_id="MER-1", isolation_forest_score=50.0, cluster_changed=None, timeseries_drift_score=None)
+
+    compute_final_score(db_session)
+
+    db_session.refresh(row)
+    assert row.final_anomaly_score == pytest.approx(0.40 * 50.0)
+    assert row.anomaly_band == "Normal"
+
+
+def test_anomaly_band_cutoffs():
+    from app.anomaly.isolation_forest import _anomaly_band
+
+    assert _anomaly_band(0.0) == "Normal"
+    assert _anomaly_band(29.9) == "Normal"
+    assert _anomaly_band(30.0) == "Low-Medium"
+    assert _anomaly_band(59.9) == "Low-Medium"
+    assert _anomaly_band(60.0) == "High"
+    assert _anomaly_band(79.9) == "High"
+    assert _anomaly_band(80.0) == "Critical"
+    assert _anomaly_band(100.0) == "Critical"
+
+
+def test_compute_final_score_requires_isolation_forest_score_first(db_session):
+    _make_snapshot(db_session, party_id="MER-1", isolation_forest_score=None)
+
+    with pytest.raises(ValueError):
+        compute_final_score(db_session)
 
 
 def test_real_data_score_distribution_sanity_check():
