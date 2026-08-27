@@ -162,6 +162,24 @@ db.close()
 "
 ```
 
+## Step 7 (LLM Agent Layer, Mistral) — env scaffolding only, not built yet
+
+`app/config.py` reads `MISTRAL_API_KEY`/`MISTRAL_MODEL` from a local `.env`
+(`python-dotenv` + `mistralai` are already in `requirements.txt`). No agent
+code exists yet -- this is only the plumbing so a real key can be dropped in
+the moment it's available, without a separate setup step later.
+
+```bash
+cp .env.example .env   # then fill in MISTRAL_API_KEY (get one at https://console.mistral.ai/)
+```
+
+`.env` is gitignored -- never commit real keys; `.env.example` (committed) is
+the template. Before writing the agent module itself, real design decisions
+are still open: trigger model (batch job vs. on-demand), whether it narrates
+just the fraud/anomaly engine's output or Operational Issues/Reconciliation
+too, and exact prompt/output shape for the frontend's incident narratives
+(see the frontend integration notes below for what that UI expects).
+
 ## API contract (for the frontend)
 
 [`docs/openapi.json`](docs/openapi.json) (and `docs/openapi.yaml`) is the OpenAPI
