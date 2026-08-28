@@ -25,9 +25,12 @@ from .anomaly.features import compute_snapshots
 from .anomaly.isolation_forest import compute_final_score, train_and_score
 from .anomaly.models import BeneficiarySnapshot, EntitySnapshot
 from .anomaly.timeseries import score_drift, score_funnel_drift
-from .dashboard import get_anomaly_detection_categories, get_overview, get_rail_stats
+from .dashboard import get_anomaly_detection_categories, get_overview, get_rail_stats, get_senior_overview
 from .database import Base, SessionLocal, engine, get_db
 from .feature_store import compute_features
+from .health import models as health_models  # noqa: F401  -- registers payment_health_scores
+from .health.models import PaymentHealthScore
+from .health.scoring import compute_health_scores
 from .ingestion import process_file
 from .models import CanonicalEvent, Individual, Merchant, PartyFeatures
 from .operations import models as operations_models  # noqa: F401  -- registers operational_issues
@@ -40,6 +43,9 @@ from .reconciliation import models as reconciliation_models  # noqa: F401  -- re
 from .reconciliation.breaks import detect_reconciliation_breaks
 from .reconciliation.models import ReconciliationBreak
 from .resolution import resolve_parties
+from .review import models as review_models  # noqa: F401  -- registers analyst_reviews
+from .review.models import STATUSES as REVIEW_STATUSES
+from .review.service import get_review, get_review_summary, set_review
 from .seed import seed_sample_mappings_if_empty
 
 
@@ -697,6 +703,119 @@ async def list_reconciliation_breaks(
     }
 
 
+# --- Payment Health engine (Step 6d) ---
+# The culmination engine -- detects nothing new, rolls up the other
+# three engines' already-real output into one bank-wide 0-100 score.
+# See app/health/scoring.py for the exact formula and why each weight
+# is what it is.
+
+class ComputeHealthRequest(BaseModel):
+    tenant_bank_id: str | None = None
+
+
+@app.post("/health/compute")
+async def compute_health_endpoint(
+    body: ComputeHealthRequest = ComputeHealthRequest(),
+    db: Session = Depends(get_db),
+):
+    return compute_health_scores(db, tenant_bank_id=body.tenant_bank_id)
+
+
+def _health_score_summary(row: PaymentHealthScore) -> dict:
+    return {
+        "tenant_bank_id": row.tenant_bank_id,
+        "health_score": row.health_score,
+        "health_band": row.health_band,
+        "components": {
+            "settlement": row.settlement_component,
+            "anomaly": row.anomaly_component,
+            "operational": row.operational_component,
+            "reconciliation": row.reconciliation_component,
+        },
+        "facts": {
+            "total_transactions": row.total_transactions,
+            "settled_transactions": row.settled_transactions,
+            "total_scored_entities": row.total_scored_entities,
+            "critical_anomaly_count": row.critical_anomaly_count,
+            "high_anomaly_count": row.high_anomaly_count,
+            "operational_issue_count": row.operational_issue_count,
+            "reconciliation_break_count": row.reconciliation_break_count,
+        },
+        "computed_at": row.computed_at,
+    }
+
+
+@app.get("/health/scores")
+async def get_health_score(tenant_bank_id: str, db: Session = Depends(get_db)):
+    row = db.get(PaymentHealthScore, tenant_bank_id)
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No Payment Health score computed yet for {tenant_bank_id} -- call POST /health/compute first",
+        )
+    return _health_score_summary(row)
+
+
+# --- Analyst review workflow ---
+# Tracks whether a human has actually looked at a detected claim --
+# PENDING until reviewed, then CONFIRMED or DISMISSED. See
+# app/review/service.py. This is what makes the analyst view a review
+# queue rather than just a read-only list, and what the senior view's
+# review-completion numbers are computed from.
+
+class SetReviewRequest(BaseModel):
+    signal_type: str  # "operational_issue" | "reconciliation_break" | "fraud_anomaly"
+    signal_id: int  # the primary key of the underlying row, same convention as /agent/narrate
+    tenant_bank_id: str
+    status: str  # "PENDING" | "CONFIRMED" | "DISMISSED"
+    reviewed_by: str | None = None
+    notes: str | None = None
+
+
+def _review_summary(row) -> dict:
+    return {
+        "signal_type": row.signal_type,
+        "reference_id": row.reference_id,
+        "tenant_bank_id": row.tenant_bank_id,
+        "status": row.status,
+        "reviewed_by": row.reviewed_by,
+        "notes": row.notes,
+        "reviewed_at": row.reviewed_at,
+    }
+
+
+@app.post("/review/set")
+async def set_review_endpoint(body: SetReviewRequest, db: Session = Depends(get_db)):
+    if body.status not in REVIEW_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status must be one of {REVIEW_STATUSES}")
+    row = set_review(
+        db, body.signal_type, str(body.signal_id), body.tenant_bank_id,
+        body.status, reviewed_by=body.reviewed_by, notes=body.notes,
+    )
+    return _review_summary(row)
+
+
+@app.get("/review/status")
+async def get_review_status_endpoint(
+    signal_type: str, signal_id: int, tenant_bank_id: str, db: Session = Depends(get_db),
+):
+    row = get_review(db, signal_type, str(signal_id), tenant_bank_id)
+    if row is None:
+        # No review row yet == implicitly PENDING, not a 404 -- the vast
+        # majority of claims will never get an explicit row until an
+        # analyst acts on them.
+        return {
+            "signal_type": signal_type, "reference_id": str(signal_id), "tenant_bank_id": tenant_bank_id,
+            "status": "PENDING", "reviewed_by": None, "notes": None, "reviewed_at": None,
+        }
+    return _review_summary(row)
+
+
+@app.get("/review/summary")
+async def get_review_summary_endpoint(tenant_bank_id: str, db: Session = Depends(get_db)):
+    return get_review_summary(db, tenant_bank_id)
+
+
 # --- Dashboard (frontend) ---
 # Read-only aggregation views over the three engines above -- see
 # app/dashboard.py. No output table of its own; nothing here computes
@@ -715,6 +834,16 @@ async def dashboard_rails(tenant_bank_id: str, db: Session = Depends(get_db)):
 @app.get("/dashboard/anomaly-detection-categories")
 async def dashboard_anomaly_detection_categories():
     return get_anomaly_detection_categories()
+
+
+@app.get("/dashboard/senior-overview")
+async def dashboard_senior_overview(tenant_bank_id: str, db: Session = Depends(get_db)):
+    """The executive rollup: one health score + review completion +
+    per-engine finding totals. No per-item detail -- that's the analyst
+    view's job (GET /operations/issues, /reconciliation/breaks,
+    /anomaly/snapshots, each with its own review status).
+    """
+    return get_senior_overview(db, tenant_bank_id)
 
 
 # --- Agent (Step 7, LLM Agent Layer) ---

@@ -22,9 +22,11 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .anomaly.models import EntitySnapshot
+from .health.models import PaymentHealthScore
 from .models import CanonicalEvent, Individual, Merchant
 from .operations.models import OperationalIssue
 from .reconciliation.models import ReconciliationBreak
+from .review.service import get_review_summary
 
 
 def get_overview(db: Session, tenant_bank_id: str) -> dict[str, Any]:
@@ -97,6 +99,48 @@ def get_rail_stats(db: Session, tenant_bank_id: str) -> dict[str, Any]:
         })
 
     return {"rails": rails}
+
+
+def get_senior_overview(db: Session, tenant_bank_id: str) -> dict[str, Any]:
+    """The executive rollup: one Payment Health score, analyst review
+    completion, and per-engine finding totals -- deliberately no
+    per-item list. The analyst view is where individual claims get
+    worked; this is the "how are we doing overall" read a senior
+    stakeholder actually wants first. Composes app/health (Step 6d) and
+    app/review's already-computed output -- same "reshape, don't
+    recompute" rule as every other function in this module.
+    """
+    base = get_overview(db, tenant_bank_id)
+    health_row = db.get(PaymentHealthScore, tenant_bank_id)
+
+    return {
+        "tenant_bank_id": tenant_bank_id,
+        "health": (
+            {
+                "score": health_row.health_score,
+                "band": health_row.health_band,
+                "components": {
+                    "settlement": health_row.settlement_component,
+                    "anomaly": health_row.anomaly_component,
+                    "operational": health_row.operational_component,
+                    "reconciliation": health_row.reconciliation_component,
+                },
+                "computed_at": health_row.computed_at,
+            }
+            if health_row
+            else None  # POST /health/compute hasn't been run yet for this tenant
+        ),
+        "review": get_review_summary(db, tenant_bank_id),
+        "engine_totals": {
+            "anomaly_band_counts": base["anomaly_band_counts"],
+            "operational_issue_counts": base["operational_issue_counts"],
+            "reconciliation_break_counts": base["reconciliation_break_counts"],
+        },
+        "settlement_rate": base["settlement_rate"],
+        "total_transactions": base["total_transactions"],
+        "date_range_start": base["date_range_start"],
+        "date_range_end": base["date_range_end"],
+    }
 
 
 def get_anomaly_detection_categories() -> dict[str, Any]:
