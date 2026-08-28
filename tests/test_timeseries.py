@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import statistics
 from datetime import datetime, timezone
 
 from app.anomaly.models import EntitySnapshot
-from app.anomaly.timeseries import score_drift
+from app.anomaly.timeseries import _cusum_signal, _ewma_zscore, score_drift
 
 
 def _make_weekly_snapshot(db, **overrides):
@@ -127,3 +128,68 @@ def test_recompute_replaces_not_duplicates(db_session):
     score_drift(db_session, tenant_bank_id="TESTBANK")
 
     assert db_session.query(EntitySnapshot).filter_by(tenant_bank_id="TESTBANK").count() == 4
+
+
+def test_cusum_signal_accumulates_persistent_small_drift():
+    # Each step only drifts a little from the last -- no single-step jump
+    # large enough to look dramatic on its own, but a steady climb that a
+    # plain z-score against the flat mean could still catch, while CUSUM
+    # is specifically built to accumulate this kind of creeping change.
+    prior = [10.0, 10.5, 11.0, 11.5, 12.0, 12.5]
+    result = _cusum_signal(prior, 13.0)
+
+    assert result > 0
+
+
+def test_cusum_signal_is_zero_for_flat_history():
+    prior = [10.0, 10.0, 10.0, 10.0]
+    result = _cusum_signal(prior, 10.0)
+
+    assert result == 0.0
+
+
+def test_ewma_zscore_weights_recent_weeks_more_than_a_flat_mean():
+    # Values drift upward over time (older weeks lower, recent weeks
+    # higher) -- an EWMA baseline (recency-weighted) sits higher than the
+    # flat mean of the same values, so the CURRENT value's z-score against
+    # the EWMA baseline should be smaller than against the flat mean.
+    prior = [10.0, 11.0, 12.0, 13.0, 14.0]
+    current = 15.0
+
+    flat_mean = statistics.mean(prior)
+    ewma_baseline_is_higher = _ewma_zscore(current, prior) < (current - flat_mean) / statistics.stdev(prior)
+    assert ewma_baseline_is_higher
+
+
+def test_tenant_relative_rescale_does_not_dilute_a_quieter_tenants_spike(db_session):
+    # Tenant A has a huge spike; Tenant B has a much smaller (but still
+    # real, relative to its own history) spike. A global rescale would
+    # crush Tenant B's spike near 0 because Tenant A's is so much bigger
+    # in absolute terms -- per-tenant rescale should let each tenant's own
+    # top score reach 100 independently.
+    weeks = _weeks(0, 6)
+    for week_start in weeks[:5]:
+        _make_weekly_snapshot(
+            db_session, party_id="MER-A", tenant_bank_id="TENANT_A", window_start=week_start, window_end=week_start,
+            transaction_count=10, amount_total=1000.0, new_counterparty_ratio=0.2,
+        )
+    _make_weekly_snapshot(
+        db_session, party_id="MER-A", tenant_bank_id="TENANT_A", window_start=weeks[5], window_end=weeks[5],
+        transaction_count=5000, amount_total=50_000_000.0, new_counterparty_ratio=0.99,
+    )
+    for week_start in weeks[:5]:
+        _make_weekly_snapshot(
+            db_session, party_id="MER-B", tenant_bank_id="TENANT_B", window_start=week_start, window_end=week_start,
+            transaction_count=10, amount_total=1000.0, new_counterparty_ratio=0.2,
+        )
+    _make_weekly_snapshot(
+        db_session, party_id="MER-B", tenant_bank_id="TENANT_B", window_start=weeks[5], window_end=weeks[5],
+        transaction_count=25, amount_total=2500.0, new_counterparty_ratio=0.5,
+    )
+
+    score_drift(db_session)  # no tenant_bank_id -- both tenants in one call
+
+    a_last = db_session.query(EntitySnapshot).filter_by(party_id="MER-A").order_by(EntitySnapshot.window_start).all()[-1]
+    b_last = db_session.query(EntitySnapshot).filter_by(party_id="MER-B").order_by(EntitySnapshot.window_start).all()[-1]
+    assert a_last.timeseries_drift_score == 100.0
+    assert b_last.timeseries_drift_score == 100.0  # not diluted by tenant A's much bigger spike

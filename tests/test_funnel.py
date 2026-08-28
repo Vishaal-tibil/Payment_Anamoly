@@ -97,3 +97,18 @@ def test_events_without_a_beneficiary_identifier_are_skipped_and_counted(db_sess
 
     assert result["skipped_no_beneficiary_identifier"] == 1
     assert db_session.query(BeneficiarySnapshot).count() == 0
+
+
+def test_near_miss_beneficiary_is_surfaced_but_not_flagged(db_session):
+    # 2 distinct senders (below the flag threshold of 3), both recent --
+    # clears the near-miss band without meeting the actual flag rule.
+    _make_event(db_session, transaction_id="TXN-0", payer_name="Alice", payee_name="Almost Mule", transaction_occurred_at="2026-05-01T10:00:00Z")
+    _make_event(db_session, transaction_id="TXN-1", payer_name="Bob", payee_name="Almost Mule", transaction_occurred_at="2026-05-02T10:00:00Z")
+
+    result = compute_beneficiary_snapshots(db_session, tenant_bank_id="KEYBANK")
+
+    assert result["funnel_flagged"] == 0
+    assert result["near_miss_count"] == 1
+    assert result["near_misses"][0]["beneficiary_key"] == "Almost Mule"
+    row = db_session.query(BeneficiarySnapshot).filter_by(beneficiary_key="Almost Mule").one()
+    assert row.funnel_flag is False

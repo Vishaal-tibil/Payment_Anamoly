@@ -1,10 +1,9 @@
 """Manual precision/accuracy spot-check: for each Fraud category (Section
-2.1 -- New Payee Risk, Funnel Account, Velocity, Structuring), pulls the
-single top-flagged item and prints the RAW canonical_events rows behind
-it, so a human can judge by eye whether the flag actually makes sense.
-
-Operational Issues (Section 2.2) are a deliberately separate, not-yet-
-built engine -- out of scope here.
+2.1 -- New Payee Risk, Funnel Account, Velocity, Structuring) and each
+Operational category (Section 2.2 -- Network Timeout, Batch Never
+Settles, Duplicate Payment, Format Rejection), pulls the single
+top-flagged item and prints the RAW canonical_events rows behind it, so a
+human can judge by eye whether the flag actually makes sense.
 
 This is not a metric -- there's no ground-truth fraud label anywhere in
 this dataset (the whole point of this engine is unsupervised detection),
@@ -24,6 +23,11 @@ from app.anomaly.models import BeneficiarySnapshot, EntitySnapshot
 from app.anomaly.timeseries import score_drift
 from app.database import SessionLocal
 from app.models import CanonicalEvent
+from app.operations.drift import detect_timeout_spikes
+from app.operations.duplicate_payment import detect_duplicate_payments
+from app.operations.format_rejection import detect_format_rejections
+from app.operations.models import OperationalIssue
+from app.operations.rules import detect_unsettled_batches
 
 DEFAULT_TENANT_BANK_ID = "MERIDIAN_TRUST_BANK"
 
@@ -142,6 +146,80 @@ def main() -> None:
             for w in all_weeks:
                 marker = " <-- FLAGGED" if w.id == top_drift.id else ""
                 print(f"    week={w.window_start.date()} txn_count={w.transaction_count} amount_total={w.amount_total:.2f}{marker}")
+
+        # --- Batch Never Settles ---
+        _header("BATCH NEVER SETTLES -- top flagged batch")
+        detect_unsettled_batches(db, tenant_bank_id=tenant_bank_id)
+        top_batch = (
+            db.query(OperationalIssue)
+            .filter_by(tenant_bank_id=tenant_bank_id, issue_type="BATCH_NOT_SETTLED")
+            .order_by(OperationalIssue.detected_at.desc())
+            .first()
+        )
+        if top_batch:
+            print(f"  {top_batch.reference_id}: {top_batch.details}")
+            events = db.query(CanonicalEvent).filter(CanonicalEvent.batch_id == top_batch.reference_id).all()
+            print("  raw transactions in this batch (check: file_reached_settlement/expected_settlement_at):")
+            for e in events:
+                print(f"    {e.transaction_id} | file_reached_settlement={e.file_reached_settlement} | expected={e.expected_settlement_at}")
+        else:
+            print("  (no batch currently flagged)")
+
+        # --- Network/Processor Timeout ---
+        _header("NETWORK TIMEOUT -- top flagged week")
+        detect_timeout_spikes(db, tenant_bank_id=tenant_bank_id)
+        top_timeout = (
+            db.query(OperationalIssue)
+            .filter_by(tenant_bank_id=tenant_bank_id, issue_type="NETWORK_TIMEOUT_SPIKE")
+            .order_by(OperationalIssue.severity_score.desc())
+            .first()
+        )
+        if top_timeout:
+            print(f"  {top_timeout.reference_id} week={top_timeout.window_start.date()} severity={top_timeout.severity_score:.1f}")
+            all_weeks = (
+                db.query(EntitySnapshot)
+                .filter_by(party_id=top_timeout.reference_id, tenant_bank_id=tenant_bank_id)
+                .order_by(EntitySnapshot.window_start)
+                .all()
+            )
+            print("  this merchant's full weekly timeout_ratio sequence (check: does the flagged week stand out?):")
+            for w in all_weeks:
+                marker = " <-- FLAGGED" if w.window_start == top_timeout.window_start else ""
+                print(f"    week={w.window_start.date()} timeout_ratio={w.timeout_ratio}{marker}")
+        else:
+            print("  (none flagged -- timeout_ratio may be constant/zero in this dataset)")
+
+        # --- Duplicate Payment ---
+        _header("DUPLICATE PAYMENT -- top flagged pair")
+        detect_duplicate_payments(db, tenant_bank_id=tenant_bank_id)
+        top_dup = (
+            db.query(OperationalIssue)
+            .filter_by(tenant_bank_id=tenant_bank_id, issue_type="DUPLICATE_PAYMENT")
+            .order_by(OperationalIssue.detected_at.desc())
+            .first()
+        )
+        if top_dup:
+            print(f"  {top_dup.details}")
+            for txn_id in top_dup.details.get("settled_transaction_ids", []):
+                e = db.query(CanonicalEvent).filter_by(transaction_id=txn_id).first()
+                if e:
+                    _print_event(e)
+        else:
+            print("  (none flagged)")
+
+        # --- Format Rejection ---
+        _header("FORMAT REJECTION -- top flagged transaction")
+        detect_format_rejections(db, tenant_bank_id=tenant_bank_id)
+        top_reject = (
+            db.query(OperationalIssue)
+            .filter_by(tenant_bank_id=tenant_bank_id, issue_type="FORMAT_REJECTION")
+            .order_by(OperationalIssue.detected_at.desc())
+            .first()
+        )
+        if top_reject:
+            print(f"  {top_reject.reference_id}: {top_reject.details}")
+        else:
+            print("  (none flagged)")
     finally:
         db.close()
 

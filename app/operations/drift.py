@@ -26,12 +26,21 @@ from .models import OperationalIssue
 _SEVERITY_FLAG_THRESHOLD = 2.0
 
 
-def _severity_score(z: float) -> float:
-    """0-100 rescale: the flag threshold itself lands at 40, scaling up
-    linearly and capping at 100 -- a simple, documented v1 choice, same
-    spirit as Track C's own min-max rescale.
+def _rescale_to_0_100(raw_scores: dict[int, float]) -> dict[int, float]:
+    """Min-max rescale within the set of weeks actually checked for ONE
+    tenant -- not a fixed multiplier, and not pooled across tenants (same
+    reasoning as timeseries.py's tenant-relative rescale: one tenant's
+    biggest deviation shouldn't dictate another tenant's severity scale).
+    Rescaled over every checked week, not just the flagged subset, so a
+    just-barely-flagged week doesn't misleadingly land at severity 0.
     """
-    return min(100.0, abs(z) * 20.0)
+    if not raw_scores:
+        return {}
+    values = list(raw_scores.values())
+    lo, hi = min(values), max(values)
+    if hi == lo:
+        return {row_id: 100.0 for row_id in raw_scores}
+    return {row_id: (v - lo) / (hi - lo) * 100 for row_id, v in raw_scores.items()}
 
 
 def detect_timeout_spikes(db: Session, tenant_bank_id: str | None = None) -> dict[str, Any]:
@@ -55,8 +64,8 @@ def detect_timeout_spikes(db: Session, tenant_bank_id: str | None = None) -> dic
         delete_query = delete_query.filter(OperationalIssue.tenant_bank_id == tenant_bank_id)
     delete_query.delete(synchronize_session=False)
 
-    weeks_checked = 0
-    flagged = 0
+    raw_z: dict[int, float] = {}
+    row_by_id: dict[int, EntitySnapshot] = {}
     for party_rows in by_party.values():
         party_rows.sort(key=lambda r: r.window_start)
         for i, row in enumerate(party_rows):
@@ -66,20 +75,37 @@ def detect_timeout_spikes(db: Session, tenant_bank_id: str | None = None) -> dic
             z = _zscore(row.timeout_ratio, prior_values)
             if z is None:
                 continue
-            weeks_checked += 1
-            if abs(z) >= _SEVERITY_FLAG_THRESHOLD:
-                db.add(OperationalIssue(
-                    issue_type="NETWORK_TIMEOUT_SPIKE",
-                    tenant_bank_id=row.tenant_bank_id,
-                    reference_type="PARTY",
-                    reference_id=row.party_id,
-                    window_start=row.window_start,
-                    window_end=row.window_end,
-                    severity_score=_severity_score(z),
-                    details={"timeout_ratio": row.timeout_ratio, "z_score": z, "prior_weeks_used": len(prior_values)},
-                ))
-                flagged += 1
+            raw_z[row.id] = z
+            row_by_id[row.id] = row
+
+    abs_z_by_tenant: dict[str, dict[int, float]] = defaultdict(dict)
+    for row_id, z in raw_z.items():
+        abs_z_by_tenant[row_by_id[row_id].tenant_bank_id][row_id] = abs(z)
+
+    severity_by_id: dict[int, float] = {}
+    for tenant_scores in abs_z_by_tenant.values():
+        severity_by_id.update(_rescale_to_0_100(tenant_scores))
+
+    flagged = 0
+    for row_id, z in raw_z.items():
+        if abs(z) < _SEVERITY_FLAG_THRESHOLD:
+            continue
+        row = row_by_id[row_id]
+        prior_count = sum(
+            1 for r in by_party[row.party_id] if r.window_start < row.window_start and r.timeout_ratio is not None
+        )
+        db.add(OperationalIssue(
+            issue_type="NETWORK_TIMEOUT_SPIKE",
+            tenant_bank_id=row.tenant_bank_id,
+            reference_type="PARTY",
+            reference_id=row.party_id,
+            window_start=row.window_start,
+            window_end=row.window_end,
+            severity_score=severity_by_id[row_id],
+            details={"timeout_ratio": row.timeout_ratio, "z_score": z, "prior_weeks_used": prior_count},
+        ))
+        flagged += 1
 
     db.commit()
 
-    return {"weeks_checked": weeks_checked, "weeks_flagged": flagged}
+    return {"weeks_checked": len(raw_z), "weeks_flagged": flagged}

@@ -9,7 +9,9 @@ fraud verdicts being reverse-engineered; they're plain operational facts,
 and reading them directly is the entire point of this engine. Don't
 import app/anomaly's exclusion list into this package by habit.
 
-Currently implemented: Batch Never Settles (rules.py, deterministic) and
-Network/Processor Timeout (drift.py, rolling z-score). Duplicate Payment
-and Formatting Rejection are deliberately out of scope for this pass.
+Implemented: Batch Never Settles (rules.py, deterministic),
+Network/Processor Timeout (drift.py, rolling z-score), Duplicate Payment
+(duplicate_payment.py, exact-key join), Formatting Rejection
+(format_rejection.py, listing half only -- the statistical "is the
+reject rate spiking" half is a separate future enhancement).
 """

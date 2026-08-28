@@ -18,6 +18,8 @@ from .ingestion import process_file
 from .models import CanonicalEvent, Individual, Merchant, PartyFeatures
 from .operations import models as operations_models  # noqa: F401  -- registers operational_issues
 from .operations.drift import detect_timeout_spikes
+from .operations.duplicate_payment import detect_duplicate_payments
+from .operations.format_rejection import detect_format_rejections
 from .operations.models import OperationalIssue
 from .operations.rules import detect_unsettled_batches
 from .resolution import resolve_parties
@@ -362,11 +364,11 @@ async def list_snapshots(
 
 # --- Operational Issues engine (Step 6b) ---
 # Separate from the anomaly engine above -- see app/operations/__init__.py
-# for why file_reached_settlement/timeout_ratio are read directly here
-# rather than treated as leakage. Only two issue types implemented so
-# far: BATCH_NOT_SETTLED (deterministic) and NETWORK_TIMEOUT_SPIKE
-# (rolling z-score). Duplicate Payment and Formatting Rejection are
-# deliberately out of scope for this pass.
+# for why file_reached_settlement/timeout_ratio/idempotency_key/
+# format_validation_status are read directly here rather than treated as
+# leakage. Four issue types implemented: BATCH_NOT_SETTLED
+# (deterministic), NETWORK_TIMEOUT_SPIKE (rolling z-score),
+# DUPLICATE_PAYMENT (exact-key join), FORMAT_REJECTION (listing half only).
 
 class ComputeOperationalIssuesRequest(BaseModel):
     tenant_bank_id: str | None = None
@@ -379,9 +381,13 @@ async def compute_operational_issues_endpoint(
 ):
     batch_result = detect_unsettled_batches(db, tenant_bank_id=body.tenant_bank_id)
     timeout_result = detect_timeout_spikes(db, tenant_bank_id=body.tenant_bank_id)
+    duplicate_result = detect_duplicate_payments(db, tenant_bank_id=body.tenant_bank_id)
+    format_result = detect_format_rejections(db, tenant_bank_id=body.tenant_bank_id)
     return {
         "batch_not_settled": batch_result,
         "network_timeout_spike": timeout_result,
+        "duplicate_payment": duplicate_result,
+        "format_rejection": format_result,
     }
 
 

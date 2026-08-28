@@ -30,6 +30,13 @@ _RECENT_WINDOW = timedelta(days=7)
 _MIN_DISTINCT_SENDERS_FOR_FUNNEL_FLAG = 3
 _MIN_NEW_SENDER_RATIO_FOR_FUNNEL_FLAG = 0.6
 
+# Near-miss band: beneficiaries below the flag threshold but not
+# trivially quiet either -- surfaced (not flagged) so the thresholds
+# above can eventually be recalibrated against where real cases actually
+# fall, instead of staying permanently arbitrary.
+_NEAR_MISS_MIN_DISTINCT_SENDERS = 2
+_NEAR_MISS_MIN_NEW_SENDER_RATIO = 0.4
+
 
 def _parse_ts(value: str | None) -> datetime | None:
     if not value:
@@ -84,6 +91,7 @@ def compute_beneficiary_snapshots(db: Session, tenant_bank_id: str | None = None
 
     processed = 0
     flagged_count = 0
+    near_misses: list[dict[str, Any]] = []
     for (tenant, beneficiary_key), events_with_ts in groups.items():
         events_with_ts.sort(key=lambda pair: pair[1])
         last_seen = events_with_ts[-1][1]
@@ -127,6 +135,16 @@ def compute_beneficiary_snapshots(db: Session, tenant_bank_id: str | None = None
         processed += 1
         if funnel_flag:
             flagged_count += 1
+        elif (
+            distinct_senders >= _NEAR_MISS_MIN_DISTINCT_SENDERS
+            and (new_sender_ratio or 0) >= _NEAR_MISS_MIN_NEW_SENDER_RATIO
+        ):
+            near_misses.append({
+                "beneficiary_key": beneficiary_key,
+                "tenant_bank_id": tenant,
+                "distinct_senders": distinct_senders,
+                "new_sender_ratio": new_sender_ratio,
+            })
 
     db.commit()
 
@@ -134,4 +152,6 @@ def compute_beneficiary_snapshots(db: Session, tenant_bank_id: str | None = None
         "beneficiaries_processed": processed,
         "funnel_flagged": flagged_count,
         "skipped_no_beneficiary_identifier": skipped_no_beneficiary,
+        "near_miss_count": len(near_misses),
+        "near_misses": near_misses,
     }
