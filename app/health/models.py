@@ -47,3 +47,24 @@ class PaymentHealthScore(Base):
     reconciliation_break_count = Column(Integer, nullable=False, default=0)
 
     computed_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)
+
+
+class PaymentHealthScoreHistory(Base):
+    """One row per (tenant, compute run) -- append-only, never upserted,
+    unlike PaymentHealthScore above. This is what makes a real trend chart
+    possible: the "latest" table only ever holds the current score, so a
+    30-day trend needs its own real history to read from. Deliberately NOT
+    backfilled with fabricated past points -- a tenant computed for the
+    first time today has a 1-point history, honestly, and it grows a real
+    point every time POST /health/compute runs from here on, the same
+    "grows via the feedback loop" shape as the analyst review workflow's
+    confirmation rate.
+    """
+
+    __tablename__ = "payment_health_score_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_bank_id = Column(String, nullable=False, index=True)
+    health_score = Column(Float, nullable=False)
+    health_band = Column(String, nullable=False)
+    computed_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False, index=True)

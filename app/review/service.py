@@ -8,7 +8,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ..anomaly.models import EntitySnapshot
+from ..anomaly.categories import FUNNEL_ACCOUNT_THRESHOLD
+from ..anomaly.models import BeneficiarySnapshot, EntitySnapshot
 from ..operations.models import OperationalIssue
 from ..reconciliation.models import ReconciliationBreak
 from .models import CONFIRMED, DISMISSED, PENDING, STATUSES, AnalystReview
@@ -77,6 +78,11 @@ def _claim_count(db: Session, tenant_bank_id: str) -> dict[str, int]:
         .filter(EntitySnapshot.tenant_bank_id == tenant_bank_id, EntitySnapshot.anomaly_band.in_(_MATERIAL_ANOMALY_BANDS))
         .count()
     )
+    counts["funnel_account"] = (
+        db.query(BeneficiarySnapshot)
+        .filter(BeneficiarySnapshot.tenant_bank_id == tenant_bank_id, BeneficiarySnapshot.funnel_drift_score >= FUNNEL_ACCOUNT_THRESHOLD)
+        .count()
+    )
     return counts
 
 
@@ -113,3 +119,45 @@ def get_review_summary(db: Session, tenant_bank_id: str) -> dict[str, Any]:
         "review_rate": round(reviewed / total_claims, 3) if total_claims else None,
         "by_signal_type": by_type,
     }
+
+
+def get_review_quality_trend(db: Session, tenant_bank_id: str) -> list[dict[str, Any]]:
+    """Real cumulative confirmation/false-positive rate, one point per
+    real review action, in the order analysts actually reviewed_at them --
+    not a fabricated smooth trend line. Reconstructed entirely from real
+    AnalystReview.reviewed_at timestamps already stored (no new snapshot
+    table needed, unlike Payment Health's history -- confirmation rate is
+    a simple running count, not a composite score computed at one instant).
+
+    Honestly sparse early on: with N total real review actions so far,
+    this returns exactly N points. Grows a real point every time an
+    analyst confirms or dismisses a claim, same "grows via the feedback
+    loop" shape as get_review_summary()'s confirmation_rate.
+    """
+    reviews = (
+        db.query(AnalystReview)
+        .filter(
+            AnalystReview.tenant_bank_id == tenant_bank_id,
+            AnalystReview.status.in_((CONFIRMED, DISMISSED)),
+            AnalystReview.reviewed_at.isnot(None),
+        )
+        .order_by(AnalystReview.reviewed_at.asc())
+        .all()
+    )
+
+    points = []
+    confirmed_so_far = 0
+    dismissed_so_far = 0
+    for review in reviews:
+        if review.status == CONFIRMED:
+            confirmed_so_far += 1
+        else:
+            dismissed_so_far += 1
+        reviewed_so_far = confirmed_so_far + dismissed_so_far
+        points.append({
+            "reviewed_at": review.reviewed_at,
+            "confirmation_rate": confirmed_so_far / reviewed_so_far,
+            "false_positive_rate": dismissed_so_far / reviewed_so_far,
+            "reviewed_count": reviewed_so_far,
+        })
+    return points

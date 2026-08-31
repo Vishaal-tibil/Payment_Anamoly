@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from app.anomaly.models import EntitySnapshot
-from app.dashboard import get_overview, get_rail_stats
+from app.dashboard import get_detection_performance, get_overview, get_rail_stats
 from app.models import CanonicalEvent, Individual, Merchant
 from app.operations.models import OperationalIssue
 from app.reconciliation.models import ReconciliationBreak
+from app.review.service import set_review
 
 
 def _make_event(db, **overrides):
@@ -144,3 +147,60 @@ def test_rail_stats_tenant_isolation(db_session):
 
     assert len(result["rails"]) == 1
     assert result["rails"][0]["rail_type"] == "ACH"
+
+
+def test_detection_performance_coverage_counts_resolved_transactions_only(db_session):
+    _make_event(db_session, transaction_id="TXN-1", merchant_id="MER-1")
+    _make_event(db_session, transaction_id="TXN-2", merchant_id=None, individual_id=None)  # unresolved
+
+    result = get_detection_performance(db_session, "KEYBANK")
+
+    assert result["total_transactions"] == 2
+    assert result["covered_transactions"] == 1
+    assert result["coverage_rate"] == 0.5
+
+
+def test_detection_performance_coverage_by_rail(db_session):
+    _make_event(db_session, transaction_id="TXN-1", rail_type="ACH", merchant_id="MER-1")
+    _make_event(db_session, transaction_id="TXN-2", rail_type="WIRE", merchant_id=None)
+
+    result = get_detection_performance(db_session, "KEYBANK")
+
+    by_rail = {r["rail_type"]: r["coverage_rate"] for r in result["coverage_by_rail"]}
+    assert by_rail["ACH"] == 1.0
+    assert by_rail["WIRE"] == 0.0
+
+
+def test_detection_performance_exposure_identified_early_sums_provisional_variances(db_session):
+    db_session.add(ReconciliationBreak(tenant_bank_id="KEYBANK", transaction_id="TXN-1", rail_type="ACH", detection_type="PROVISIONAL_VARIANCE", amount=500.0))
+    db_session.add(ReconciliationBreak(tenant_bank_id="KEYBANK", transaction_id="TXN-2", rail_type="ACH", detection_type="CONFIRMED_BREAK", amount=9999.0))
+    db_session.commit()
+
+    result = get_detection_performance(db_session, "KEYBANK")
+
+    assert result["exposure_identified_early"] == 500.0  # CONFIRMED_BREAK excluded -- not "caught early"
+    assert result["provisional_variance_count"] == 1
+
+
+def test_detection_performance_confirmation_and_false_positive_rate_from_real_reviews(db_session):
+    db_session.add(OperationalIssue(id=1, issue_type="DUPLICATE_PAYMENT", tenant_bank_id="KEYBANK", reference_type="TRANSACTION", reference_id="TXN-A"))
+    db_session.add(OperationalIssue(id=2, issue_type="DUPLICATE_PAYMENT", tenant_bank_id="KEYBANK", reference_type="TRANSACTION", reference_id="TXN-B"))
+    db_session.add(OperationalIssue(id=3, issue_type="DUPLICATE_PAYMENT", tenant_bank_id="KEYBANK", reference_type="TRANSACTION", reference_id="TXN-C"))
+    db_session.commit()
+    set_review(db_session, "operational_issue", "1", "KEYBANK", "CONFIRMED")
+    set_review(db_session, "operational_issue", "2", "KEYBANK", "CONFIRMED")
+    set_review(db_session, "operational_issue", "3", "KEYBANK", "DISMISSED")
+
+    result = get_detection_performance(db_session, "KEYBANK")
+
+    assert result["reviewed_count"] == 3
+    assert result["confirmation_rate"] == pytest.approx(2 / 3)
+    assert result["false_positive_rate"] == pytest.approx(1 / 3)
+
+
+def test_detection_performance_rates_are_null_with_no_reviews_yet(db_session):
+    result = get_detection_performance(db_session, "KEYBANK")
+
+    assert result["reviewed_count"] == 0
+    assert result["confirmation_rate"] is None
+    assert result["false_positive_rate"] is None

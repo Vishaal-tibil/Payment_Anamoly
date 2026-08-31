@@ -217,3 +217,49 @@ def test_compute_cluster_changed_unit():
     assert result[1] is None
     assert result[2] is False
     assert result[3] is True
+
+
+def test_two_tenants_are_never_pooled_together(db_session):
+    # Same segment name, same party_id convention, deliberately DIFFERENT
+    # tenants -- if grouping ever pooled by segment alone (not
+    # (tenant, segment)), these two tenants' rows would get clustered
+    # together and each tenant's row count below would be wrong.
+    for i in range(6):
+        _make_snapshot(db_session, party_id=f"MER-A{i}", tenant_bank_id="TENANT_A", window_type="TO_DATE", window_start=None, **_QUIET)
+    for i in range(6):
+        _make_snapshot(db_session, party_id=f"MER-B{i}", tenant_bank_id="TENANT_B", window_type="TO_DATE", window_start=None, **_QUIET)
+
+    result = cluster_and_score(db_session)  # no tenant_bank_id -- both tenants in one call
+
+    assert "TENANT_A/MERCHANT" in result["segments"]
+    assert "TENANT_B/MERCHANT" in result["segments"]
+    assert result["segments"]["TENANT_A/MERCHANT"]["rows_clustered"] == 6
+    assert result["segments"]["TENANT_B/MERCHANT"]["rows_clustered"] == 6
+
+    a_rows = db_session.query(EntitySnapshot).filter_by(tenant_bank_id="TENANT_A").all()
+    b_rows = db_session.query(EntitySnapshot).filter_by(tenant_bank_id="TENANT_B").all()
+    assert all(r.cluster_id is not None for r in a_rows + b_rows)
+
+
+def test_include_structuring_with_pca_still_separates_distinct_groups(db_session):
+    # Same two-group separability test as above, but with
+    # include_structuring=True (adds near_threshold_ratio + PCA) -- proves
+    # PCA compression is what makes the 12th dimension viable, rather than
+    # collapsing everything to noise the way plain inclusion did.
+    quiet_with_structuring = {**_QUIET, "near_threshold_ratio": 0.05}
+    active_with_structuring = {**_ACTIVE, "near_threshold_ratio": 0.95}
+    for i in range(6):
+        _make_snapshot(db_session, party_id=f"MER-QUIET-{i}", window_type="TO_DATE", window_start=None, **quiet_with_structuring)
+    for i in range(6):
+        _make_snapshot(db_session, party_id=f"MER-ACTIVE-{i}", window_type="TO_DATE", window_start=None, **active_with_structuring)
+
+    result = cluster_and_score(db_session, tenant_bank_id="TESTBANK", include_structuring=True)
+
+    assert result["errors"] == []
+    quiet_rows = db_session.query(EntitySnapshot).filter(EntitySnapshot.party_id.like("MER-QUIET-%")).all()
+    active_rows = db_session.query(EntitySnapshot).filter(EntitySnapshot.party_id.like("MER-ACTIVE-%")).all()
+    quiet_clusters = {r.cluster_id for r in quiet_rows}
+    active_clusters = {r.cluster_id for r in active_rows}
+    assert len(quiet_clusters) == 1
+    assert len(active_clusters) == 1
+    assert quiet_clusters != active_clusters
