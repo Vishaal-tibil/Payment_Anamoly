@@ -18,15 +18,16 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
+from .anomaly.categories import get_pattern_mix
 from .anomaly.models import EntitySnapshot
 from .health.models import PaymentHealthScore
 from .models import CanonicalEvent, Individual, Merchant
 from .operations.models import OperationalIssue
 from .reconciliation.models import ReconciliationBreak
-from .review.service import get_review_summary
+from .review.service import get_review_quality_trend, get_review_summary
 
 
 def get_overview(db: Session, tenant_bank_id: str) -> dict[str, Any]:
@@ -140,6 +141,78 @@ def get_senior_overview(db: Session, tenant_bank_id: str) -> dict[str, Any]:
         "total_transactions": base["total_transactions"],
         "date_range_start": base["date_range_start"],
         "date_range_end": base["date_range_end"],
+    }
+
+
+def get_detection_performance(db: Session, tenant_bank_id: str) -> dict[str, Any]:
+    """Real detection-performance metrics -- deliberately NOT the
+    "Detection Effectiveness %" / "False Positive Rate" the original
+    prototype showed as static mock numbers. Those aren't computable at
+    all in an unsupervised system with no ground-truth fraud label...
+    except that the analyst review workflow (app/review) *is* a real
+    human ground-truth signal, just one that only exists once a claim
+    has actually been reviewed. So confirmation/false-positive rate here
+    are real, computed only from actually-reviewed claims, and honestly
+    small-sample early on -- they grow more statistically meaningful as
+    more review activity accumulates. reviewed_count is returned
+    alongside so the UI never shows a rate without also showing how much
+    real feedback it's based on.
+
+    Coverage and "exposure identified early" don't have that
+    growing-over-time caveat -- both are computable right now:
+    - Coverage: the fraction of transactions belonging to a resolved
+      merchant/individual (merchant_id or individual_id set) -- i.e.
+      actually eligible for this platform's behavioral monitoring.
+    - Exposure identified early: real dollar sum of PROVISIONAL_VARIANCE
+      reconciliation breaks -- a variance flagged before the source
+      system's own official BREAK verdict caught up to it (see
+      app/reconciliation/breaks.py's module docstring).
+    """
+    total_transactions = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id).count()
+    resolved_filter = or_(CanonicalEvent.merchant_id.isnot(None), CanonicalEvent.individual_id.isnot(None))
+    covered_transactions = (
+        db.query(CanonicalEvent).filter(CanonicalEvent.tenant_bank_id == tenant_bank_id, resolved_filter).count()
+    )
+
+    coverage_by_rail = []
+    rail_types = [r for (r,) in db.query(CanonicalEvent.rail_type).filter_by(tenant_bank_id=tenant_bank_id).distinct().all()]
+    for rail_type in sorted(rail_types):
+        rail_total = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, rail_type=rail_type).count()
+        rail_covered = (
+            db.query(CanonicalEvent)
+            .filter(CanonicalEvent.tenant_bank_id == tenant_bank_id, CanonicalEvent.rail_type == rail_type, resolved_filter)
+            .count()
+        )
+        coverage_by_rail.append({
+            "rail_type": rail_type,
+            "coverage_rate": (rail_covered / rail_total) if rail_total else None,
+        })
+
+    early_breaks = (
+        db.query(ReconciliationBreak)
+        .filter_by(tenant_bank_id=tenant_bank_id, detection_type="PROVISIONAL_VARIANCE")
+        .all()
+    )
+    exposure_identified_early = sum(abs(b.amount) for b in early_breaks if b.amount is not None)
+
+    review = get_review_summary(db, tenant_bank_id)
+    reviewed_count = review["confirmed"] + review["dismissed"]
+
+    return {
+        "coverage_rate": (covered_transactions / total_transactions) if total_transactions else None,
+        "covered_transactions": covered_transactions,
+        "total_transactions": total_transactions,
+        "coverage_by_rail": coverage_by_rail,
+        "exposure_identified_early": round(exposure_identified_early, 2),
+        "provisional_variance_count": len(early_breaks),
+        "confirmation_rate": (review["confirmed"] / reviewed_count) if reviewed_count else None,
+        "false_positive_rate": (review["dismissed"] / reviewed_count) if reviewed_count else None,
+        "reviewed_count": reviewed_count,
+        "pending_count": review["pending"],
+        "confirmed_count": review["confirmed"],
+        "dismissed_count": review["dismissed"],
+        "quality_trend": get_review_quality_trend(db, tenant_bank_id),
+        "pattern_mix": get_pattern_mix(db, tenant_bank_id),
     }
 
 

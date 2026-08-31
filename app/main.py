@@ -13,6 +13,7 @@ from . import models  # noqa: F401  -- registers tables on Base.metadata
 from .agent import models as agent_models  # noqa: F401  -- registers agent_narratives
 from .agent.models import AgentNarrative
 from .agent.narration import (
+    facts_for_beneficiary_snapshot,
     facts_for_entity_snapshot,
     facts_for_operational_issue,
     facts_for_reconciliation_break,
@@ -20,17 +21,26 @@ from .agent.narration import (
 )
 from .anomaly import models as anomaly_models  # noqa: F401  -- registers anomaly_entity_snapshots
 from .anomaly.beneficiary_features import compute_beneficiary_snapshots
+from .anomaly.categories import FUNNEL_ACCOUNT_THRESHOLD, categories_for_snapshots
 from .anomaly.clustering import cluster_and_score
 from .anomaly.features import compute_snapshots
 from .anomaly.isolation_forest import compute_final_score, train_and_score
 from .anomaly.models import BeneficiarySnapshot, EntitySnapshot
 from .anomaly.timeseries import score_drift, score_funnel_drift
-from .dashboard import get_anomaly_detection_categories, get_overview, get_rail_stats, get_senior_overview
+from .dashboard import get_anomaly_detection_categories, get_detection_performance, get_overview, get_rail_stats, get_senior_overview
 from .database import Base, SessionLocal, engine, get_db
+from .exposure import (
+    get_exposure_by_domain,
+    get_exposure_trend,
+    get_mitigation_progress,
+    get_mitigation_progress_by_domain,
+    get_payment_normalcy,
+    get_payment_value_by_rail,
+)
 from .feature_store import compute_features
 from .health import models as health_models  # noqa: F401  -- registers payment_health_scores
 from .health.models import PaymentHealthScore
-from .health.scoring import compute_health_scores
+from .health.scoring import compute_health_scores, get_health_history
 from .ingestion import process_file
 from .models import CanonicalEvent, Individual, Merchant, PartyFeatures
 from .operations import models as operations_models  # noqa: F401  -- registers operational_issues
@@ -45,7 +55,7 @@ from .reconciliation.models import ReconciliationBreak
 from .resolution import resolve_parties
 from .review import models as review_models  # noqa: F401  -- registers analyst_reviews
 from .review.models import STATUSES as REVIEW_STATUSES
-from .review.service import get_review, get_review_summary, set_review
+from .review.service import get_review, get_review_quality_trend, get_review_summary, set_review
 from .seed import seed_sample_mappings_if_empty
 
 
@@ -356,6 +366,7 @@ async def train_isolation_forest_endpoint(
 
 class ClusterAndScoreRequest(BaseModel):
     tenant_bank_id: str | None = None
+    include_structuring: bool = False  # opt-in: adds near_threshold_ratio via PCA -- see clustering.py
 
 
 @app.post("/anomaly/clustering/compute")
@@ -363,7 +374,7 @@ async def cluster_and_score_endpoint(
     body: ClusterAndScoreRequest = ClusterAndScoreRequest(),
     db: Session = Depends(get_db),
 ):
-    return cluster_and_score(db, tenant_bank_id=body.tenant_bank_id)
+    return cluster_and_score(db, tenant_bank_id=body.tenant_bank_id, include_structuring=body.include_structuring)
 
 
 # --- Anomaly detection engine: Section 8 final aggregation ---
@@ -389,9 +400,10 @@ async def compute_final_score_endpoint(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _snapshot_summary(s: EntitySnapshot) -> dict:
+def _snapshot_summary(s: EntitySnapshot, matched_categories: list[str] | None = None) -> dict:
     return {
         "id": s.id,
+        "matched_categories": matched_categories or [],
         "party_id": s.party_id,
         "party_type": s.party_type,
         "tenant_bank_id": s.tenant_bank_id,
@@ -447,9 +459,17 @@ async def list_snapshots(
         .limit(limit)
         .all()
     )
+
+    # Computed against each row's whole segment population, not just this
+    # page -- a row's tags shouldn't change depending on pagination. Cheap
+    # at this data volume (one query per distinct segment on the page).
+    category_map: dict[int, list[str]] = {}
+    for seg in {s.segment for s in rows}:
+        category_map.update(categories_for_snapshots(db, tenant_bank_id, seg))
+
     return {
         "total": total,
-        "snapshots": [_snapshot_summary(s) for s in rows],
+        "snapshots": [_snapshot_summary(s, category_map.get(s.id)) for s in rows],
     }
 
 
@@ -510,6 +530,11 @@ def _beneficiary_snapshot_summary(s: BeneficiarySnapshot) -> dict:
         "new_sender_ratio": s.new_sender_ratio,
         "sender_party_types": s.sender_party_types,
         "funnel_drift_score": s.funnel_drift_score,
+        "matched_categories": (
+            ["Funnel Account"]
+            if s.funnel_drift_score is not None and s.funnel_drift_score >= FUNNEL_ACCOUNT_THRESHOLD
+            else []
+        ),
         "computed_at": s.computed_at,
     }
 
@@ -756,6 +781,15 @@ async def get_health_score(tenant_bank_id: str, db: Session = Depends(get_db)):
     return _health_score_summary(row)
 
 
+@app.get("/health/history")
+async def get_health_history_endpoint(tenant_bank_id: str, limit: int = 90, db: Session = Depends(get_db)):
+    """Real health-score history for this tenant -- see
+    get_health_history()'s docstring for why this can honestly be a
+    1-point list today and grow over real time, never backfilled.
+    """
+    return {"points": get_health_history(db, tenant_bank_id, limit=limit)}
+
+
 # --- Analyst review workflow ---
 # Tracks whether a human has actually looked at a detected claim --
 # PENDING until reviewed, then CONFIRMED or DISMISSED. See
@@ -836,6 +870,17 @@ async def dashboard_anomaly_detection_categories():
     return get_anomaly_detection_categories()
 
 
+@app.get("/dashboard/detection-performance")
+async def dashboard_detection_performance(tenant_bank_id: str, db: Session = Depends(get_db)):
+    """Real detection-performance metrics -- see get_detection_performance's
+    docstring for why confirmation/false-positive rate are grounded in the
+    analyst review workflow (real, but grows more meaningful as review
+    activity accumulates) while coverage and exposure-identified-early are
+    fully real right now.
+    """
+    return get_detection_performance(db, tenant_bank_id)
+
+
 @app.get("/dashboard/senior-overview")
 async def dashboard_senior_overview(tenant_bank_id: str, db: Session = Depends(get_db)):
     """The executive rollup: one health score + review completion +
@@ -844,6 +889,23 @@ async def dashboard_senior_overview(tenant_bank_id: str, db: Session = Depends(g
     /anomaly/snapshots, each with its own review status).
     """
     return get_senior_overview(db, tenant_bank_id)
+
+
+@app.get("/dashboard/exposure")
+async def dashboard_exposure(tenant_bank_id: str, db: Session = Depends(get_db)):
+    """Real-dollar exposure views -- see app/exposure.py for exactly what
+    "exposure" and "mitigated" mean here and why. Combined into one call
+    since the Overview and Anomalies pages each read a subset of the same
+    underlying real claims (see app/exposure.py's _all_claims()).
+    """
+    return {
+        "by_domain": get_exposure_by_domain(db, tenant_bank_id),
+        "trend": get_exposure_trend(db, tenant_bank_id),
+        "mitigation": get_mitigation_progress(db, tenant_bank_id),
+        "mitigation_by_domain": get_mitigation_progress_by_domain(db, tenant_bank_id),
+        "payment_value_by_rail": get_payment_value_by_rail(db, tenant_bank_id),
+        "normalcy": get_payment_normalcy(db, tenant_bank_id),
+    }
 
 
 # --- Agent (Step 7, LLM Agent Layer) ---
@@ -855,6 +917,7 @@ _FACT_BUILDERS = {
     "operational_issue": (OperationalIssue, facts_for_operational_issue),
     "reconciliation_break": (ReconciliationBreak, facts_for_reconciliation_break),
     "fraud_anomaly": (EntitySnapshot, facts_for_entity_snapshot),
+    "funnel_account": (BeneficiarySnapshot, facts_for_beneficiary_snapshot),
 }
 
 

@@ -43,7 +43,7 @@ from ..anomaly.models import EntitySnapshot
 from ..models import CanonicalEvent
 from ..operations.models import OperationalIssue
 from ..reconciliation.models import ReconciliationBreak
-from .models import PaymentHealthScore
+from .models import PaymentHealthScore, PaymentHealthScoreHistory
 
 _SETTLEMENT_WEIGHT = 0.30
 _ANOMALY_WEIGHT = 0.30
@@ -133,6 +133,12 @@ def _compute_for_tenant(db: Session, tenant_bank_id: str) -> PaymentHealthScore:
     row.reconciliation_break_count = reconciliation_break_count
     if not existing:
         db.add(row)
+
+    # Always a new row, never upserted -- this is the real history a trend
+    # chart reads from. See PaymentHealthScoreHistory's own docstring.
+    db.add(PaymentHealthScoreHistory(
+        tenant_bank_id=tenant_bank_id, health_score=health_score, health_band=row.health_band,
+    ))
     return row
 
 
@@ -159,3 +165,23 @@ def compute_health_scores(db: Session, tenant_bank_id: str | None = None) -> dic
             for row in scored
         ],
     }
+
+
+def get_health_history(db: Session, tenant_bank_id: str, limit: int = 90) -> list[dict[str, Any]]:
+    """Real compute-run history for this tenant, oldest first -- however
+    many points actually exist (often just 1, honestly, until
+    POST /health/compute has run repeatedly over real time). Never
+    backfilled with fabricated past points -- see PaymentHealthScoreHistory.
+    """
+    rows = (
+        db.query(PaymentHealthScoreHistory)
+        .filter_by(tenant_bank_id=tenant_bank_id)
+        .order_by(PaymentHealthScoreHistory.computed_at.desc())
+        .limit(limit)
+        .all()
+    )
+    rows.reverse()
+    return [
+        {"computed_at": row.computed_at, "health_score": row.health_score, "health_band": row.health_band}
+        for row in rows
+    ]

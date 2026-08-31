@@ -9,7 +9,7 @@ from app.models import CanonicalEvent
 from app.operations.models import OperationalIssue
 from app.reconciliation.models import ReconciliationBreak
 from app.review.models import AnalystReview
-from app.review.service import get_review, get_review_summary, set_review
+from app.review.service import get_review, get_review_quality_trend, get_review_summary, set_review
 
 
 def test_get_review_returns_none_when_never_reviewed(db_session):
@@ -117,3 +117,44 @@ def test_review_summary_with_no_claims_has_null_review_rate(db_session):
 
     assert summary["total_claims"] == 0
     assert summary["review_rate"] is None
+
+
+def test_quality_trend_one_point_per_real_review_in_chronological_order(db_session):
+    set_review(db_session, "operational_issue", "1", "KEYBANK", "CONFIRMED")
+    set_review(db_session, "operational_issue", "2", "KEYBANK", "DISMISSED")
+    set_review(db_session, "operational_issue", "3", "KEYBANK", "CONFIRMED")
+
+    points = get_review_quality_trend(db_session, "KEYBANK")
+
+    assert len(points) == 3
+    assert points[0]["reviewed_count"] == 1
+    assert points[0]["confirmation_rate"] == 1.0
+    assert points[1]["reviewed_count"] == 2
+    assert points[1]["confirmation_rate"] == 0.5
+    assert points[1]["false_positive_rate"] == 0.5
+    assert points[2]["reviewed_count"] == 3
+    assert points[2]["confirmation_rate"] == pytest.approx(2 / 3)
+
+
+def test_quality_trend_excludes_pending_reviews(db_session):
+    set_review(db_session, "operational_issue", "1", "KEYBANK", "CONFIRMED")
+    set_review(db_session, "operational_issue", "2", "KEYBANK", "PENDING")
+
+    points = get_review_quality_trend(db_session, "KEYBANK")
+
+    assert len(points) == 1
+
+
+def test_quality_trend_empty_when_nothing_reviewed_yet(db_session):
+    points = get_review_quality_trend(db_session, "KEYBANK")
+
+    assert points == []
+
+
+def test_quality_trend_tenant_isolation(db_session):
+    set_review(db_session, "operational_issue", "1", "KEYBANK", "CONFIRMED")
+    set_review(db_session, "operational_issue", "2", "MTB", "CONFIRMED")
+
+    points = get_review_quality_trend(db_session, "KEYBANK")
+
+    assert len(points) == 1

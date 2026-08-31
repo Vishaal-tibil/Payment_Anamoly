@@ -16,7 +16,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ..anomaly.models import EntitySnapshot
+from ..anomaly.models import BeneficiarySnapshot, EntitySnapshot
 from ..operations.models import OperationalIssue
 from ..reconciliation.models import ReconciliationBreak
 from .client import MODEL, get_client
@@ -67,6 +67,7 @@ _IDENTIFIER_FACT_KEY = {
     "operational_issue": "reference_id",
     "reconciliation_break": "transaction_id",
     "fraud_anomaly": "party_id",
+    "funnel_account": "beneficiary_key",
 }
 
 
@@ -109,6 +110,23 @@ def facts_for_entity_snapshot(snapshot: EntitySnapshot) -> dict[str, Any]:
         "timeseries_drift_score": snapshot.timeseries_drift_score,
         "final_anomaly_score": snapshot.final_anomaly_score,
         "anomaly_band": snapshot.anomaly_band,
+    }
+
+
+def facts_for_beneficiary_snapshot(snapshot: BeneficiarySnapshot) -> dict[str, Any]:
+    return {
+        "signal_type": "funnel_account",
+        "beneficiary_key": snapshot.beneficiary_key,
+        "beneficiary_name": snapshot.beneficiary_name,
+        "window_start": snapshot.window_start.isoformat() if snapshot.window_start else None,
+        "window_end": snapshot.window_end.isoformat() if snapshot.window_end else None,
+        "transaction_count": snapshot.transaction_count,
+        "amount_total": snapshot.amount_total,
+        "distinct_senders": snapshot.distinct_senders,
+        "distinct_new_senders": snapshot.distinct_new_senders,
+        "new_sender_ratio": snapshot.new_sender_ratio,
+        "sender_party_types": snapshot.sender_party_types,
+        "funnel_drift_score": snapshot.funnel_drift_score,
     }
 
 

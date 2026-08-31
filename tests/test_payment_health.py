@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.anomaly.models import EntitySnapshot
-from app.health.models import PaymentHealthScore
-from app.health.scoring import compute_health_scores
+from app.health.models import PaymentHealthScore, PaymentHealthScoreHistory
+from app.health.scoring import compute_health_scores, get_health_history
 from app.models import CanonicalEvent
 from app.operations.models import OperationalIssue
 from app.reconciliation.models import ReconciliationBreak
@@ -138,3 +138,35 @@ def test_no_transactions_still_scores_a_row_at_100(db_session):
 
     assert row.health_score == 100.0  # nothing bad detected because nothing exists to be bad
     assert row.total_transactions == 0
+
+
+def test_each_compute_run_appends_a_history_row_not_upserts(db_session):
+    _event(db_session, transaction_id="TXN-1", status="SETTLED")
+    db_session.commit()
+
+    compute_health_scores(db_session, tenant_bank_id="KEYBANK")
+    _event(db_session, transaction_id="TXN-2", status="PENDING")
+    db_session.commit()
+    compute_health_scores(db_session, tenant_bank_id="KEYBANK")
+
+    history = db_session.query(PaymentHealthScoreHistory).filter_by(tenant_bank_id="KEYBANK").all()
+    assert len(history) == 2  # two real compute runs -- two real points, not one overwritten
+    assert db_session.query(PaymentHealthScore).filter_by(tenant_bank_id="KEYBANK").count() == 1  # "latest" table still just one row
+
+
+def test_get_health_history_returns_points_oldest_first(db_session):
+    _event(db_session, transaction_id="TXN-1")
+    db_session.commit()
+    compute_health_scores(db_session, tenant_bank_id="KEYBANK")
+    compute_health_scores(db_session, tenant_bank_id="KEYBANK")
+
+    points = get_health_history(db_session, "KEYBANK")
+
+    assert len(points) == 2
+    assert points[0]["computed_at"] <= points[1]["computed_at"]
+
+
+def test_get_health_history_is_empty_not_an_error_when_never_computed(db_session):
+    points = get_health_history(db_session, "KEYBANK")
+
+    assert points == []
