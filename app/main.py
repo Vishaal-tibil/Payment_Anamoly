@@ -6,7 +6,7 @@ from enum import Enum
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from . import models  # noqa: F401  -- registers tables on Base.metadata
@@ -44,6 +44,7 @@ from .health.scoring import compute_health_scores, get_health_history
 from .ingestion import process_file
 from .models import CanonicalEvent, Individual, Merchant, PartyFeatures
 from .operations import models as operations_models  # noqa: F401  -- registers operational_issues
+from .priority import priority_levels_for_breaks, priority_levels_for_issues
 from .operations.drift import detect_timeout_spikes
 from .operations.duplicate_payment import detect_duplicate_payments
 from .operations.format_rejection import list_format_rejections, score_format_rejection_drift
@@ -159,11 +160,19 @@ def _merchant_summary(db: Session, merchant: Merchant) -> dict:
 @app.get("/merchants")
 async def list_merchants(
     tenant_bank_id: str,
+    search: str | None = None,
     limit: int = 20,
     offset: int = 0,
     db: Session = Depends(get_db),
 ):
     base_query = db.query(Merchant).filter(Merchant.tenant_bank_id == tenant_bank_id)
+    if search:
+        # Real fields only -- merchant_id (the id an analyst would actually
+        # type/paste), legal_name, trade_name. Case-insensitive partial match.
+        pattern = f"%{search}%"
+        base_query = base_query.filter(
+            or_(Merchant.merchant_id.ilike(pattern), Merchant.legal_name.ilike(pattern), Merchant.trade_name.ilike(pattern))
+        )
     total = base_query.count()
     merchants = (
         base_query.order_by(Merchant.created_at)
@@ -222,11 +231,17 @@ def _individual_summary(db: Session, individual: Individual) -> dict:
 @app.get("/individuals")
 async def list_individuals(
     tenant_bank_id: str,
+    search: str | None = None,
     limit: int = 20,
     offset: int = 0,
     db: Session = Depends(get_db),
 ):
     base_query = db.query(Individual).filter(Individual.tenant_bank_id == tenant_bank_id)
+    if search:
+        pattern = f"%{search}%"
+        base_query = base_query.filter(
+            or_(Individual.individual_id.ilike(pattern), Individual.full_name.ilike(pattern))
+        )
     total = base_query.count()
     individuals = (
         base_query.order_by(Individual.created_at)
@@ -473,6 +488,15 @@ async def list_snapshots(
     }
 
 
+@app.get("/anomaly/snapshots/{snapshot_id}")
+async def get_snapshot(snapshot_id: int, tenant_bank_id: str, db: Session = Depends(get_db)):
+    row = db.query(EntitySnapshot).filter_by(id=snapshot_id, tenant_bank_id=tenant_bank_id).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No snapshot id={snapshot_id} for this tenant")
+    category_map = categories_for_snapshots(db, tenant_bank_id, row.segment)
+    return _snapshot_summary(row, category_map.get(row.id))
+
+
 # --- Anomaly detection engine: Track C (time-series drift) ---
 
 class ScoreDriftRequest(BaseModel):
@@ -563,6 +587,14 @@ async def list_beneficiary_snapshots(
     }
 
 
+@app.get("/anomaly/beneficiary-snapshots/{snapshot_id}")
+async def get_beneficiary_snapshot(snapshot_id: int, tenant_bank_id: str, db: Session = Depends(get_db)):
+    row = db.query(BeneficiarySnapshot).filter_by(id=snapshot_id, tenant_bank_id=tenant_bank_id).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No beneficiary snapshot id={snapshot_id} for this tenant")
+    return _beneficiary_snapshot_summary(row)
+
+
 # --- Operational Issues engine (Step 6b) ---
 # A separate engine from the fraud/anomaly one above -- writes to its own
 # operational_issues table, never to EntitySnapshot/BeneficiarySnapshot.
@@ -630,7 +662,7 @@ async def detect_timeout_spikes_endpoint(
     return detect_timeout_spikes(db, tenant_bank_id=body.tenant_bank_id)
 
 
-def _operational_issue_summary(issue: OperationalIssue) -> dict:
+def _operational_issue_summary(issue: OperationalIssue, priority: dict | None = None) -> dict:
     return {
         "id": issue.id,
         "issue_type": issue.issue_type,
@@ -639,7 +671,8 @@ def _operational_issue_summary(issue: OperationalIssue) -> dict:
         "reference_id": issue.reference_id,
         "window_start": issue.window_start,
         "window_end": issue.window_end,
-        "severity_score": issue.severity_score,
+        "severity_score": (priority or {}).get("severity_score", issue.severity_score),
+        "priority_level": (priority or {}).get("priority_level"),
         "details": issue.details,
         "detected_at": issue.detected_at,
     }
@@ -649,6 +682,7 @@ def _operational_issue_summary(issue: OperationalIssue) -> dict:
 async def list_operational_issues(
     tenant_bank_id: str,
     issue_type: str | None = None,
+    priority_level: str | None = None,
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -656,17 +690,30 @@ async def list_operational_issues(
     base_query = db.query(OperationalIssue).filter(OperationalIssue.tenant_bank_id == tenant_bank_id)
     if issue_type:
         base_query = base_query.filter(OperationalIssue.issue_type == issue_type.upper())
-    total = base_query.count()
-    rows = (
-        base_query.order_by(OperationalIssue.detected_at.desc())
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
+    rows = base_query.order_by(OperationalIssue.detected_at.desc()).all()
+
+    # Priority is computed against the tenant's whole real population (see
+    # app/priority.py), not just this page/filter's rows -- so it's
+    # calculated before offset/limit/priority_level narrow the result set.
+    priorities = priority_levels_for_issues(db, tenant_bank_id)
+    if priority_level:
+        rows = [r for r in rows if priorities.get(r.id, {}).get("priority_level") == priority_level.capitalize()]
+
+    total = len(rows)
+    page = rows[offset : offset + limit]
     return {
         "total": total,
-        "issues": [_operational_issue_summary(i) for i in rows],
+        "issues": [_operational_issue_summary(i, priorities.get(i.id)) for i in page],
     }
+
+
+@app.get("/operations/issues/{issue_id}")
+async def get_operational_issue(issue_id: int, tenant_bank_id: str, db: Session = Depends(get_db)):
+    issue = db.query(OperationalIssue).filter_by(id=issue_id, tenant_bank_id=tenant_bank_id).one_or_none()
+    if issue is None:
+        raise HTTPException(status_code=404, detail=f"No operational issue id={issue_id} for this tenant")
+    priorities = priority_levels_for_issues(db, tenant_bank_id)
+    return _operational_issue_summary(issue, priorities.get(issue.id))
 
 
 # --- Reconciliation engine (Step 6c) ---
@@ -689,7 +736,7 @@ async def detect_reconciliation_breaks_endpoint(
     return detect_reconciliation_breaks(db, tenant_bank_id=body.tenant_bank_id)
 
 
-def _reconciliation_break_summary(row: ReconciliationBreak) -> dict:
+def _reconciliation_break_summary(row: ReconciliationBreak, priority: dict | None = None) -> dict:
     return {
         "id": row.id,
         "tenant_bank_id": row.tenant_bank_id,
@@ -699,6 +746,8 @@ def _reconciliation_break_summary(row: ReconciliationBreak) -> dict:
         "source_reconciliation_status": row.source_reconciliation_status,
         "variance_amount": row.variance_amount,
         "amount": row.amount,
+        "severity_score": (priority or {}).get("severity_score"),
+        "priority_level": (priority or {}).get("priority_level"),
         "details": row.details,
         "detected_at": row.detected_at,
     }
@@ -708,6 +757,7 @@ def _reconciliation_break_summary(row: ReconciliationBreak) -> dict:
 async def list_reconciliation_breaks(
     tenant_bank_id: str,
     detection_type: str | None = None,
+    priority_level: str | None = None,
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -715,17 +765,27 @@ async def list_reconciliation_breaks(
     base_query = db.query(ReconciliationBreak).filter(ReconciliationBreak.tenant_bank_id == tenant_bank_id)
     if detection_type:
         base_query = base_query.filter(ReconciliationBreak.detection_type == detection_type.upper())
-    total = base_query.count()
-    rows = (
-        base_query.order_by(ReconciliationBreak.detected_at.desc())
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
+    rows = base_query.order_by(ReconciliationBreak.detected_at.desc()).all()
+
+    priorities = priority_levels_for_breaks(db, tenant_bank_id)
+    if priority_level:
+        rows = [r for r in rows if priorities.get(r.id, {}).get("priority_level") == priority_level.capitalize()]
+
+    total = len(rows)
+    page = rows[offset : offset + limit]
     return {
         "total": total,
-        "breaks": [_reconciliation_break_summary(r) for r in rows],
+        "breaks": [_reconciliation_break_summary(r, priorities.get(r.id)) for r in page],
     }
+
+
+@app.get("/reconciliation/breaks/{break_id}")
+async def get_reconciliation_break(break_id: int, tenant_bank_id: str, db: Session = Depends(get_db)):
+    row = db.query(ReconciliationBreak).filter_by(id=break_id, tenant_bank_id=tenant_bank_id).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No reconciliation break id={break_id} for this tenant")
+    priorities = priority_levels_for_breaks(db, tenant_bank_id)
+    return _reconciliation_break_summary(row, priorities.get(row.id))
 
 
 # --- Payment Health engine (Step 6d) ---

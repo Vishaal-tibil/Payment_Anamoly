@@ -89,6 +89,14 @@ paths:
         schema:
           type: string
           title: Tenant Bank Id
+      - name: search
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Search
       - name: limit
         in: query
         required: false
@@ -161,6 +169,14 @@ paths:
         schema:
           type: string
           title: Tenant Bank Id
+      - name: search
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Search
       - name: limit
         in: query
         required: false
@@ -387,7 +403,8 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/ClusterAndScoreRequest'
-              default: {}
+              default:
+                include_structuring: false
       responses:
         '200':
           description: Clustering run completed for both segments.
@@ -499,6 +516,35 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       tags:
       - Anomaly Detection - Behavioral Snapshots (Track A)
+  /anomaly/snapshots/{snapshot_id}:
+    get:
+      summary: Get Snapshot
+      operationId: get_snapshot_anomaly_snapshots__snapshot_id__get
+      parameters:
+      - name: snapshot_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Snapshot Id
+      - name: tenant_bank_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Tenant Bank Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /anomaly/timeseries/compute:
     post:
       summary: Score Drift Endpoint
@@ -622,6 +668,35 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       tags:
       - Anomaly Detection - Funnel Account (Track A input + Track C)
+  /anomaly/beneficiary-snapshots/{snapshot_id}:
+    get:
+      summary: Get Beneficiary Snapshot
+      operationId: get_beneficiary_snapshot_anomaly_beneficiary_snapshots__snapshot_id__get
+      parameters:
+      - name: snapshot_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Snapshot Id
+      - name: tenant_bank_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Tenant Bank Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /operations/duplicate-payments/compute:
     post:
       summary: Detect Duplicate Payments Endpoint
@@ -766,6 +841,14 @@ paths:
           - type: string
           - type: 'null'
           title: Issue Type
+      - name: priority_level
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Priority Level
       - name: limit
         in: query
         required: false
@@ -795,6 +878,35 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       tags:
       - Operational Issues - Issue Feed (Step 6b)
+  /operations/issues/{issue_id}:
+    get:
+      summary: Get Operational Issue
+      operationId: get_operational_issue_operations_issues__issue_id__get
+      parameters:
+      - name: issue_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Issue Id
+      - name: tenant_bank_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Tenant Bank Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /reconciliation/breaks/compute:
     post:
       summary: Detect Reconciliation Breaks Endpoint
@@ -839,6 +951,14 @@ paths:
           - type: string
           - type: 'null'
           title: Detection Type
+      - name: priority_level
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Priority Level
       - name: limit
         in: query
         required: false
@@ -868,6 +988,195 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       tags:
       - Reconciliation (Step 6c)
+  /reconciliation/breaks/{break_id}:
+    get:
+      summary: Get Reconciliation Break
+      operationId: get_reconciliation_break_reconciliation_breaks__break_id__get
+      parameters:
+      - name: break_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Break Id
+      - name: tenant_bank_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Tenant Bank Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /health/compute:
+    post:
+      summary: Compute Health Endpoint
+      operationId: compute_health_endpoint_health_compute_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComputeHealthRequest'
+              default: {}
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /health/scores:
+    get:
+      summary: Get Health Score
+      operationId: get_health_score_health_scores_get
+      parameters:
+      - name: tenant_bank_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Tenant Bank Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /health/history:
+    get:
+      summary: Get Health History Endpoint
+      description: 'Real health-score history for this tenant -- see
+
+        get_health_history()''s docstring for why this can honestly be a
+
+        1-point list today and grow over real time, never backfilled.'
+      operationId: get_health_history_endpoint_health_history_get
+      parameters:
+      - name: tenant_bank_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Tenant Bank Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 90
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /review/set:
+    post:
+      summary: Set Review Endpoint
+      operationId: set_review_endpoint_review_set_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetReviewRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /review/status:
+    get:
+      summary: Get Review Status Endpoint
+      operationId: get_review_status_endpoint_review_status_get
+      parameters:
+      - name: signal_type
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Signal Type
+      - name: signal_id
+        in: query
+        required: true
+        schema:
+          type: integer
+          title: Signal Id
+      - name: tenant_bank_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Tenant Bank Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /review/summary:
+    get:
+      summary: Get Review Summary Endpoint
+      operationId: get_review_summary_endpoint_review_summary_get
+      parameters:
+      - name: tenant_bank_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Tenant Bank Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /dashboard/overview:
     get:
       summary: Dashboard Overview
@@ -934,6 +1243,99 @@ paths:
                 $ref: '#/components/schemas/AnomalyDetectionCategories'
       tags:
       - Dashboard (frontend)
+  /dashboard/detection-performance:
+    get:
+      summary: Dashboard Detection Performance
+      description: 'Real detection-performance metrics -- see get_detection_performance''s
+
+        docstring for why confirmation/false-positive rate are grounded in the
+
+        analyst review workflow (real, but grows more meaningful as review
+
+        activity accumulates) while coverage and exposure-identified-early are
+
+        fully real right now.'
+      operationId: dashboard_detection_performance_dashboard_detection_performance_get
+      parameters:
+      - name: tenant_bank_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Tenant Bank Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /dashboard/senior-overview:
+    get:
+      summary: Dashboard Senior Overview
+      description: 'The executive rollup: one health score + review completion +
+
+        per-engine finding totals. No per-item detail -- that''s the analyst
+
+        view''s job (GET /operations/issues, /reconciliation/breaks,
+
+        /anomaly/snapshots, each with its own review status).'
+      operationId: dashboard_senior_overview_dashboard_senior_overview_get
+      parameters:
+      - name: tenant_bank_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Tenant Bank Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /dashboard/exposure:
+    get:
+      summary: Dashboard Exposure
+      description: 'Real-dollar exposure views -- see app/exposure.py for exactly
+        what
+
+        "exposure" and "mitigated" mean here and why. Combined into one call
+
+        since the Overview and Anomalies pages each read a subset of the same
+
+        underlying real claims (see app/exposure.py''s _all_claims()).'
+      operationId: dashboard_exposure_dashboard_exposure_get
+      parameters:
+      - name: tenant_bank_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Tenant Bank Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /agent/narrate:
     post:
       summary: Narrate Endpoint
@@ -1062,6 +1464,10 @@ components:
           - type: string
           - type: 'null'
           title: Tenant Bank Id
+        include_structuring:
+          type: boolean
+          title: Include Structuring
+          default: false
       type: object
       title: ClusterAndScoreRequest
     ComputeBeneficiarySnapshotsRequest:
@@ -1091,6 +1497,15 @@ components:
           title: Tenant Bank Id
       type: object
       title: ComputeFinalScoreRequest
+    ComputeHealthRequest:
+      properties:
+        tenant_bank_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tenant Bank Id
+      type: object
+      title: ComputeHealthRequest
     ComputeSnapshotsRequest:
       properties:
         tenant_bank_id:
@@ -1211,6 +1626,37 @@ components:
           title: Tenant Bank Id
       type: object
       title: ScoreFunnelDriftRequest
+    SetReviewRequest:
+      properties:
+        signal_type:
+          type: string
+          title: Signal Type
+        signal_id:
+          type: integer
+          title: Signal Id
+        tenant_bank_id:
+          type: string
+          title: Tenant Bank Id
+        status:
+          type: string
+          title: Status
+        reviewed_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reviewed By
+        notes:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Notes
+      type: object
+      required:
+      - signal_type
+      - signal_id
+      - tenant_bank_id
+      - status
+      title: SetReviewRequest
     SettlementStage:
       type: string
       enum:
