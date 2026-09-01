@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, NamedTuple
 from uuid import uuid4
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..anomaly.models import EntitySnapshot
@@ -245,3 +246,24 @@ def compute_cases(db: Session, tenant_bank_id: str | None = None) -> dict[str, A
     db.commit()
 
     return {"cases_created": cases_created, "alerts_grouped": alerts_grouped}
+
+
+def get_anomaly_type_counts(db: Session, tenant_bank_id: str | None = None) -> dict[str, Any]:
+    """Ranked count of InvestigationCaseAlert.anomaly_type -- real named
+    types ("Failure-rate spike," "Batch never settles," etc.) already
+    computed by compute_cases(), just never surfaced as their own list
+    before this. Read-only reshape, same "reshape, don't recompute" rule
+    dashboard.py follows -- run POST /investigation/cases/compute first
+    if this looks stale.
+    """
+    query = db.query(InvestigationCaseAlert.anomaly_type, func.count(InvestigationCaseAlert.id))
+    if tenant_bank_id:
+        query = query.filter(InvestigationCaseAlert.tenant_bank_id == tenant_bank_id)
+    rows = query.group_by(InvestigationCaseAlert.anomaly_type).all()
+
+    types = sorted(
+        ({"anomaly_type": anomaly_type, "count": count} for anomaly_type, count in rows),
+        key=lambda t: t["count"],
+        reverse=True,
+    )
+    return {"types": types}

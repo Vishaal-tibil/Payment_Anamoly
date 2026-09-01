@@ -19,10 +19,18 @@ from ..agent.narration import (
 )
 from ..anomaly.categories import FUNNEL_ACCOUNT_THRESHOLD, categories_for_snapshots
 from ..anomaly.models import BeneficiarySnapshot, EntitySnapshot
-from ..dashboard import get_detection_performance, get_overview, get_rail_stats
+from ..dashboard import (
+    get_detection_attention,
+    get_detection_performance,
+    get_overview,
+    get_priority_distribution,
+    get_rail_stats,
+)
 from ..database import get_db
 from ..exposure import (
+    get_anomaly_heatmap,
     get_exposure_by_domain,
+    get_exposure_by_rail,
     get_exposure_trend,
     get_mitigation_progress,
     get_mitigation_progress_by_domain,
@@ -30,7 +38,9 @@ from ..exposure import (
     get_payment_value_by_rail,
 )
 from ..investigation.cases import compute_cases as compute_investigation_cases
+from ..investigation.cases import get_anomaly_type_counts
 from ..investigation.models import InvestigationCase, InvestigationCaseAlert
+from ..review.service import get_review_quality_trend_daily
 from ..operations.models import OperationalIssue
 from ..reconciliation.models import ReconciliationBreak
 
@@ -110,6 +120,18 @@ async def list_snapshots(
     }
 
 
+@router.get("/anomaly/snapshots/{snapshot_id}")
+async def get_snapshot(snapshot_id: int, db: Session = Depends(get_db)):
+    snapshot = db.get(EntitySnapshot, snapshot_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="entity snapshot not found")
+    # matched_categories is relative to this snapshot's whole segment
+    # population (same reasoning list_snapshots() above uses) -- not
+    # something derivable from this one row alone.
+    category_map = categories_for_snapshots(db, snapshot.tenant_bank_id, snapshot.segment)
+    return _snapshot_summary(snapshot, category_map.get(snapshot.id))
+
+
 def _beneficiary_snapshot_summary(s: BeneficiarySnapshot) -> dict:
     return {
         "id": s.id,
@@ -158,6 +180,14 @@ async def list_beneficiary_snapshots(
     }
 
 
+@router.get("/anomaly/beneficiary-snapshots/{snapshot_id}")
+async def get_beneficiary_snapshot(snapshot_id: int, db: Session = Depends(get_db)):
+    snapshot = db.get(BeneficiarySnapshot, snapshot_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="beneficiary snapshot not found")
+    return _beneficiary_snapshot_summary(snapshot)
+
+
 def _operational_issue_summary(issue: OperationalIssue) -> dict:
     return {
         "id": issue.id,
@@ -195,6 +225,14 @@ async def list_operational_issues(
         "total": total,
         "issues": [_operational_issue_summary(i) for i in rows],
     }
+
+
+@router.get("/operations/issues/{issue_id}")
+async def get_operational_issue(issue_id: int, db: Session = Depends(get_db)):
+    issue = db.get(OperationalIssue, issue_id)
+    if issue is None:
+        raise HTTPException(status_code=404, detail="operational issue not found")
+    return _operational_issue_summary(issue)
 
 
 def _reconciliation_break_summary(row: ReconciliationBreak) -> dict:
@@ -236,6 +274,14 @@ async def list_reconciliation_breaks(
     }
 
 
+@router.get("/reconciliation/breaks/{break_id}")
+async def get_reconciliation_break(break_id: int, db: Session = Depends(get_db)):
+    brk = db.get(ReconciliationBreak, break_id)
+    if brk is None:
+        raise HTTPException(status_code=404, detail="reconciliation break not found")
+    return _reconciliation_break_summary(brk)
+
+
 @router.get("/dashboard/overview")
 async def dashboard_overview(tenant_bank_id: str, db: Session = Depends(get_db)):
     return get_overview(db, tenant_bank_id)
@@ -272,6 +318,50 @@ async def dashboard_exposure(tenant_bank_id: str, db: Session = Depends(get_db))
         "payment_value_by_rail": get_payment_value_by_rail(db, tenant_bank_id),
         "normalcy": get_payment_normalcy(db, tenant_bank_id),
     }
+
+
+@router.get("/dashboard/exposure-by-rail")
+async def dashboard_exposure_by_rail(tenant_bank_id: str, db: Session = Depends(get_db)):
+    """Real-dollar exposure broken down by rail instead of by domain --
+    see get_exposure_by_rail()'s docstring for why Fraud/Anomaly claims
+    are excluded (no single rail to attribute them to).
+    """
+    return get_exposure_by_rail(db, tenant_bank_id)
+
+
+@router.get("/dashboard/priority-distribution")
+async def dashboard_priority_distribution(tenant_bank_id: str, db: Session = Depends(get_db)):
+    """Critical/High/Medium/Low counts across all three engines -- see
+    get_priority_distribution()'s docstring for the exact bucketing rule
+    (a heuristic, since no engine stores a "priority" field itself).
+    """
+    return get_priority_distribution(db, tenant_bank_id)
+
+
+@router.get("/dashboard/anomaly-heatmap")
+async def dashboard_anomaly_heatmap(tenant_bank_id: str, db: Session = Depends(get_db)):
+    """Rail x category cross-tab -- serves both Overview's heatmap and
+    Payment Rails' "Anomalies by Rail" breakdown, same underlying data.
+    """
+    return get_anomaly_heatmap(db, tenant_bank_id)
+
+
+@router.get("/dashboard/quality-trend-daily")
+async def dashboard_quality_trend_daily(tenant_bank_id: str, days: int = 7, db: Session = Depends(get_db)):
+    """Confirmed/dismissed counts per calendar day over this tenant's own
+    recent review activity -- see get_review_quality_trend_daily()'s
+    docstring for why "recent" is relative to the data's own timeline,
+    not wall-clock now().
+    """
+    return {"days": get_review_quality_trend_daily(db, tenant_bank_id, days=days)}
+
+
+@router.get("/dashboard/detection-attention")
+async def dashboard_detection_attention(tenant_bank_id: str, db: Session = Depends(get_db)):
+    """Rails whose success_rate sits below this tenant's own cross-rail
+    average -- see get_detection_attention()'s docstring.
+    """
+    return get_detection_attention(db, tenant_bank_id)
 
 
 _FACT_BUILDERS = {
@@ -374,6 +464,15 @@ async def compute_cases_endpoint(
     db: Session = Depends(get_db),
 ):
     return compute_investigation_cases(db, tenant_bank_id=body.tenant_bank_id)
+
+
+@router.get("/investigation/anomaly-types")
+async def list_anomaly_type_counts(tenant_bank_id: str, db: Session = Depends(get_db)):
+    """Ranked real named types ("Failure-rate spike," "Batch never
+    settles," etc.) from InvestigationCaseAlert -- see
+    get_anomaly_type_counts()'s docstring.
+    """
+    return get_anomaly_type_counts(db, tenant_bank_id=tenant_bank_id)
 
 
 def _investigation_case_summary(case: InvestigationCase) -> dict:

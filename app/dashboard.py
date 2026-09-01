@@ -363,6 +363,72 @@ def get_detection_performance(db: Session, tenant_bank_id: str) -> dict[str, Any
     }
 
 
+def get_priority_distribution(db: Session, tenant_bank_id: str) -> dict[str, Any]:
+    """Critical/High/Medium/Low counts across all three engines' findings
+    -- a heuristic bucketing (no engine stores a "priority" field itself),
+    documented here rather than left implicit:
+    - Fraud: anomaly_band Critical/High/Low-Medium map directly; Normal
+      isn't a detected issue, excluded (same scope get_pattern_mix uses).
+    - Reconciliation: CONFIRMED_BREAK -> critical (the source's own
+      confirmed verdict); PROVISIONAL_VARIANCE -> medium (still ahead of
+      that verdict).
+    - Operational: DUPLICATE_PAYMENT -> critical (money actually moved
+      twice); the two z-score types use their own severity_score
+      (>=80 -> critical, else high); the two remaining deterministic
+      types (BATCH_NOT_SETTLED, FORMAT_REJECTION) -> high, since they
+      have no further real granularity to split on.
+    """
+    counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+
+    for (band,) in db.query(EntitySnapshot.anomaly_band).filter_by(tenant_bank_id=tenant_bank_id).all():
+        if band == "Critical":
+            counts["critical"] += 1
+        elif band == "High":
+            counts["high"] += 1
+        elif band == "Low-Medium":
+            counts["medium"] += 1
+
+    for issue in db.query(OperationalIssue).filter_by(tenant_bank_id=tenant_bank_id).all():
+        if issue.issue_type == "DUPLICATE_PAYMENT":
+            counts["critical"] += 1
+        elif issue.severity_score is not None:
+            counts["critical" if issue.severity_score >= 80 else "high"] += 1
+        else:
+            counts["high"] += 1
+
+    for (detection_type,) in db.query(ReconciliationBreak.detection_type).filter_by(tenant_bank_id=tenant_bank_id).all():
+        counts["critical" if detection_type == "CONFIRMED_BREAK" else "medium"] += 1
+
+    return counts
+
+
+def get_detection_attention(db: Session, tenant_bank_id: str) -> dict[str, Any]:
+    """Flags rails whose success_rate sits below this tenant's own
+    cross-rail average -- a relative comparison against this tenant's own
+    data, not an arbitrary absolute threshold (no external benchmark
+    exists for what counts as "good" on any of these rails). Reuses
+    get_detection_performance()'s already-computed per-rail figures,
+    same "reshape, don't recompute" rule as the rest of this module.
+    """
+    performance = get_detection_performance(db, tenant_bank_id)
+    by_rail = performance["detection_performance_by_rail"]
+    rates = [r["success_rate"] for r in by_rail if r["success_rate"] is not None]
+    if not rates:
+        return {"areas": []}
+
+    average = sum(rates) / len(rates)
+    areas = []
+    for r in by_rail:
+        if r["success_rate"] is not None and r["success_rate"] < average:
+            areas.append({
+                "rail_type": r["rail_type"],
+                "reason": f"success_rate {r['success_rate']:.1%} -- below this tenant's {average:.1%} average across rails",
+                "severity": "high" if r["success_rate"] < average - 0.05 else "medium",
+            })
+    areas.sort(key=lambda a: a["rail_type"])
+    return {"areas": areas}
+
+
 def get_anomaly_detection_categories() -> dict[str, Any]:
     """Static -- describes what the platform's three detection engines
     actually screen for and how, matching the recursive category-tree
