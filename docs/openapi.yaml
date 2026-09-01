@@ -487,6 +487,24 @@ paths:
           - type: string
           - type: 'null'
           title: Split
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: End Date
       - name: limit
         in: query
         required: false
@@ -639,6 +657,24 @@ paths:
           - type: string
           - type: 'null'
           title: Beneficiary Key
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: End Date
       - name: limit
         in: query
         required: false
@@ -1188,6 +1224,24 @@ paths:
         schema:
           type: string
           title: Tenant Bank Id
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: End Date
       responses:
         '200':
           description: Live aggregate counts across all three engines for this tenant.
@@ -1214,6 +1268,24 @@ paths:
         schema:
           type: string
           title: Tenant Bank Id
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: End Date
       responses:
         '200':
           description: Per-rail transaction/settlement/reconciliation stats, using
@@ -1254,7 +1326,11 @@ paths:
 
         activity accumulates) while coverage and exposure-identified-early are
 
-        fully real right now.'
+        fully real right now. start_date/end_date scope coverage and
+
+        exposure-identified-early only -- see that docstring for why the rest
+
+        stays unfiltered.'
       operationId: dashboard_detection_performance_dashboard_detection_performance_get
       parameters:
       - name: tenant_bank_id
@@ -1263,6 +1339,24 @@ paths:
         schema:
           type: string
           title: Tenant Bank Id
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: End Date
       responses:
         '200':
           description: Successful Response
@@ -1315,7 +1409,11 @@ paths:
 
         since the Overview and Anomalies pages each read a subset of the same
 
-        underlying real claims (see app/exposure.py''s _all_claims()).'
+        underlying real claims (see app/exposure.py''s _all_claims()).
+
+        start_date/end_date (optional "YYYY-MM-DD") scope every figure here to
+
+        that real transaction window.'
       operationId: dashboard_exposure_dashboard_exposure_get
       parameters:
       - name: tenant_bank_id
@@ -1324,6 +1422,24 @@ paths:
         schema:
           type: string
           title: Tenant Bank Id
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: End Date
       responses:
         '200':
           description: Successful Response

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import date
 from enum import Enum
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
@@ -29,6 +30,7 @@ from .anomaly.models import BeneficiarySnapshot, EntitySnapshot
 from .anomaly.timeseries import score_drift, score_funnel_drift
 from .dashboard import get_anomaly_detection_categories, get_detection_performance, get_overview, get_rail_stats, get_senior_overview
 from .database import Base, SessionLocal, engine, get_db
+from .date_filter import datetime_bounds
 from .exposure import (
     get_exposure_by_domain,
     get_exposure_trend,
@@ -456,6 +458,8 @@ async def list_snapshots(
     party_id: str | None = None,
     segment: str | None = None,
     split: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -467,6 +471,13 @@ async def list_snapshots(
         base_query = base_query.filter(EntitySnapshot.segment == segment.upper())
     if split:
         base_query = base_query.filter(EntitySnapshot.split == split.lower())
+    # window_end is a real DateTime column -- filterable directly, same
+    # date_range convention as GET /dashboard/overview.
+    dt_lower, dt_upper = datetime_bounds(start_date, end_date)
+    if dt_lower:
+        base_query = base_query.filter(EntitySnapshot.window_end >= dt_lower)
+    if dt_upper:
+        base_query = base_query.filter(EntitySnapshot.window_end < dt_upper)
     total = base_query.count()
     rows = (
         base_query.order_by(EntitySnapshot.party_id, EntitySnapshot.window_end)
@@ -567,6 +578,8 @@ def _beneficiary_snapshot_summary(s: BeneficiarySnapshot) -> dict:
 async def list_beneficiary_snapshots(
     tenant_bank_id: str,
     beneficiary_key: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -574,6 +587,11 @@ async def list_beneficiary_snapshots(
     base_query = db.query(BeneficiarySnapshot).filter(BeneficiarySnapshot.tenant_bank_id == tenant_bank_id)
     if beneficiary_key:
         base_query = base_query.filter(BeneficiarySnapshot.beneficiary_key == beneficiary_key)
+    dt_lower, dt_upper = datetime_bounds(start_date, end_date)
+    if dt_lower:
+        base_query = base_query.filter(BeneficiarySnapshot.window_end >= dt_lower)
+    if dt_upper:
+        base_query = base_query.filter(BeneficiarySnapshot.window_end < dt_upper)
     total = base_query.count()
     rows = (
         base_query.order_by(BeneficiarySnapshot.beneficiary_key, BeneficiarySnapshot.window_start)
@@ -916,13 +934,23 @@ async def get_review_summary_endpoint(tenant_bank_id: str, db: Session = Depends
 # anything new, it only reshapes what's already been computed.
 
 @app.get("/dashboard/overview")
-async def dashboard_overview(tenant_bank_id: str, db: Session = Depends(get_db)):
-    return get_overview(db, tenant_bank_id)
+async def dashboard_overview(
+    tenant_bank_id: str,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    db: Session = Depends(get_db),
+):
+    return get_overview(db, tenant_bank_id, start_date, end_date)
 
 
 @app.get("/dashboard/rails")
-async def dashboard_rails(tenant_bank_id: str, db: Session = Depends(get_db)):
-    return get_rail_stats(db, tenant_bank_id)
+async def dashboard_rails(
+    tenant_bank_id: str,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    db: Session = Depends(get_db),
+):
+    return get_rail_stats(db, tenant_bank_id, start_date, end_date)
 
 
 @app.get("/dashboard/anomaly-detection-categories")
@@ -931,14 +959,21 @@ async def dashboard_anomaly_detection_categories():
 
 
 @app.get("/dashboard/detection-performance")
-async def dashboard_detection_performance(tenant_bank_id: str, db: Session = Depends(get_db)):
+async def dashboard_detection_performance(
+    tenant_bank_id: str,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    db: Session = Depends(get_db),
+):
     """Real detection-performance metrics -- see get_detection_performance's
     docstring for why confirmation/false-positive rate are grounded in the
     analyst review workflow (real, but grows more meaningful as review
     activity accumulates) while coverage and exposure-identified-early are
-    fully real right now.
+    fully real right now. start_date/end_date scope coverage and
+    exposure-identified-early only -- see that docstring for why the rest
+    stays unfiltered.
     """
-    return get_detection_performance(db, tenant_bank_id)
+    return get_detection_performance(db, tenant_bank_id, start_date, end_date)
 
 
 @app.get("/dashboard/senior-overview")
@@ -952,19 +987,26 @@ async def dashboard_senior_overview(tenant_bank_id: str, db: Session = Depends(g
 
 
 @app.get("/dashboard/exposure")
-async def dashboard_exposure(tenant_bank_id: str, db: Session = Depends(get_db)):
+async def dashboard_exposure(
+    tenant_bank_id: str,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    db: Session = Depends(get_db),
+):
     """Real-dollar exposure views -- see app/exposure.py for exactly what
     "exposure" and "mitigated" mean here and why. Combined into one call
     since the Overview and Anomalies pages each read a subset of the same
     underlying real claims (see app/exposure.py's _all_claims()).
+    start_date/end_date (optional "YYYY-MM-DD") scope every figure here to
+    that real transaction window.
     """
     return {
-        "by_domain": get_exposure_by_domain(db, tenant_bank_id),
-        "trend": get_exposure_trend(db, tenant_bank_id),
-        "mitigation": get_mitigation_progress(db, tenant_bank_id),
-        "mitigation_by_domain": get_mitigation_progress_by_domain(db, tenant_bank_id),
-        "payment_value_by_rail": get_payment_value_by_rail(db, tenant_bank_id),
-        "normalcy": get_payment_normalcy(db, tenant_bank_id),
+        "by_domain": get_exposure_by_domain(db, tenant_bank_id, start_date, end_date),
+        "trend": get_exposure_trend(db, tenant_bank_id, start_date, end_date),
+        "mitigation": get_mitigation_progress(db, tenant_bank_id, start_date, end_date),
+        "mitigation_by_domain": get_mitigation_progress_by_domain(db, tenant_bank_id, start_date, end_date),
+        "payment_value_by_rail": get_payment_value_by_rail(db, tenant_bank_id, start_date, end_date),
+        "normalcy": get_payment_normalcy(db, tenant_bank_id, start_date, end_date),
     }
 
 

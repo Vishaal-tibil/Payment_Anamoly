@@ -16,6 +16,7 @@ exist anywhere in the actual data.
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import func, or_
@@ -23,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from .anomaly.categories import get_pattern_mix
 from .anomaly.models import EntitySnapshot
+from .date_filter import date_in_range, datetime_bounds, occurred_at_bounds
 from .health.models import PaymentHealthScore
 from .models import CanonicalEvent, Individual, Merchant
 from .operations.models import OperationalIssue
@@ -30,11 +32,63 @@ from .reconciliation.models import ReconciliationBreak
 from .review.service import get_review_quality_trend, get_review_summary
 
 
-def get_overview(db: Session, tenant_bank_id: str) -> dict[str, Any]:
-    total_transactions = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id).count()
-    settled_transactions = (
-        db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, status="SETTLED").count()
+def _parse_occurred_at(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _operational_issue_date(db: Session, tenant_bank_id: str, issue: OperationalIssue) -> datetime | None:
+    """The real date an operational issue's own detected condition
+    occurred, not when our engine detected it (detected_at is a batch
+    compute timestamp, not spread meaningfully over time -- see
+    priority.py's docstring for the same distinction). Rate-based issues
+    (spikes) carry their own real window_start/window_end; the other
+    types need the same reference_id/batch_id join app/exposure.py's
+    _operational_claims already uses for their dollar amounts.
+    """
+    if issue.window_end is not None:
+        return issue.window_end
+    if issue.issue_type == "BATCH_NOT_SETTLED":
+        event = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, batch_id=issue.reference_id).first()
+    else:
+        event = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, transaction_id=issue.reference_id).first()
+    return _parse_occurred_at(event.transaction_occurred_at) if event else None
+
+
+def _reconciliation_break_date(db: Session, tenant_bank_id: str, brk: ReconciliationBreak) -> datetime | None:
+    event = (
+        db.query(CanonicalEvent)
+        .filter_by(tenant_bank_id=tenant_bank_id, rail_type=brk.rail_type, transaction_id=brk.transaction_id)
+        .one_or_none()
     )
+    return _parse_occurred_at(event.transaction_occurred_at) if event else None
+
+
+def get_overview(
+    db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
+) -> dict[str, Any]:
+    """start_date/end_date (optional "YYYY-MM-DD") scope every real
+    transaction-derived figure to that real window. Entity counts
+    (total_merchants/total_individuals) and date_range_start/end stay
+    unfiltered -- a merchant onboarded outside the window doesn't stop
+    existing, and date_range_start/end are the real full addressable
+    range the UI's own date picker bounds itself to, not an echo of the
+    current selection.
+    """
+    lower, upper = occurred_at_bounds(start_date, end_date)
+
+    events_query = db.query(CanonicalEvent).filter(CanonicalEvent.tenant_bank_id == tenant_bank_id)
+    if lower:
+        events_query = events_query.filter(CanonicalEvent.transaction_occurred_at >= lower)
+    if upper:
+        events_query = events_query.filter(CanonicalEvent.transaction_occurred_at < upper)
+
+    total_transactions = events_query.count()
+    settled_transactions = events_query.filter(CanonicalEvent.status == "SETTLED").count()
     total_merchants = db.query(Merchant).filter_by(tenant_bank_id=tenant_bank_id).count()
     total_individuals = db.query(Individual).filter_by(tenant_bank_id=tenant_bank_id).count()
 
@@ -47,18 +101,35 @@ def get_overview(db: Session, tenant_bank_id: str) -> dict[str, Any]:
         .one()
     )
 
+    # EntitySnapshot.window_end is a real DateTime column -- filterable
+    # directly, no join needed.
+    dt_lower, dt_upper = datetime_bounds(start_date, end_date)
+    snapshot_query = db.query(EntitySnapshot.anomaly_band).filter(EntitySnapshot.tenant_bank_id == tenant_bank_id)
+    if dt_lower:
+        snapshot_query = snapshot_query.filter(EntitySnapshot.window_end >= dt_lower)
+    if dt_upper:
+        snapshot_query = snapshot_query.filter(EntitySnapshot.window_end < dt_upper)
     anomaly_band_counts: dict[str, int] = defaultdict(int)
-    for (band,) in db.query(EntitySnapshot.anomaly_band).filter_by(tenant_bank_id=tenant_bank_id).all():
+    for (band,) in snapshot_query.all():
         if band:
             anomaly_band_counts[band] += 1
 
+    # OperationalIssue/ReconciliationBreak have no meaningful date column of
+    # their own (detected_at is a batch compute timestamp -- see
+    # _operational_issue_date's docstring) -- real date comes from the
+    # underlying transaction via the same join app/exposure.py's
+    # _all_claims() already uses for dollar amounts.
     operational_issue_counts: dict[str, int] = defaultdict(int)
-    for (issue_type,) in db.query(OperationalIssue.issue_type).filter_by(tenant_bank_id=tenant_bank_id).all():
-        operational_issue_counts[issue_type] += 1
+    for issue in db.query(OperationalIssue).filter_by(tenant_bank_id=tenant_bank_id).all():
+        occurred = _operational_issue_date(db, tenant_bank_id, issue)
+        if date_in_range(occurred, start_date, end_date):
+            operational_issue_counts[issue.issue_type] += 1
 
     reconciliation_break_counts: dict[str, int] = defaultdict(int)
-    for (detection_type,) in db.query(ReconciliationBreak.detection_type).filter_by(tenant_bank_id=tenant_bank_id).all():
-        reconciliation_break_counts[detection_type] += 1
+    for brk in db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id).all():
+        occurred = _reconciliation_break_date(db, tenant_bank_id, brk)
+        if date_in_range(occurred, start_date, end_date):
+            reconciliation_break_counts[brk.detection_type] += 1
 
     return {
         "total_transactions": total_transactions,
@@ -74,16 +145,28 @@ def get_overview(db: Session, tenant_bank_id: str) -> dict[str, Any]:
     }
 
 
-def get_rail_stats(db: Session, tenant_bank_id: str) -> dict[str, Any]:
-    events = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id).all()
+def get_rail_stats(
+    db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
+) -> dict[str, Any]:
+    lower, upper = occurred_at_bounds(start_date, end_date)
+    events_query = db.query(CanonicalEvent).filter(CanonicalEvent.tenant_bank_id == tenant_bank_id)
+    if lower:
+        events_query = events_query.filter(CanonicalEvent.transaction_occurred_at >= lower)
+    if upper:
+        events_query = events_query.filter(CanonicalEvent.transaction_occurred_at < upper)
+    events = events_query.all()
 
     by_rail: dict[str, list[CanonicalEvent]] = defaultdict(list)
     for event in events:
         by_rail[event.rail_type].append(event)
 
+    # ReconciliationBreak has no date column of its own -- same join as
+    # get_overview's reconciliation_break_counts.
     break_counts_by_rail: dict[str, int] = defaultdict(int)
-    for (rail_type,) in db.query(ReconciliationBreak.rail_type).filter_by(tenant_bank_id=tenant_bank_id).all():
-        break_counts_by_rail[rail_type] += 1
+    for brk in db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id).all():
+        occurred = _reconciliation_break_date(db, tenant_bank_id, brk)
+        if date_in_range(occurred, start_date, end_date):
+            break_counts_by_rail[brk.rail_type] += 1
 
     rails = []
     for rail_type in sorted(by_rail.keys()):
@@ -144,7 +227,9 @@ def get_senior_overview(db: Session, tenant_bank_id: str) -> dict[str, Any]:
     }
 
 
-def get_detection_performance(db: Session, tenant_bank_id: str) -> dict[str, Any]:
+def get_detection_performance(
+    db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
+) -> dict[str, Any]:
     """Real detection-performance metrics -- deliberately NOT the
     "Detection Effectiveness %" / "False Positive Rate" the original
     prototype showed as static mock numbers. Those aren't computable at
@@ -167,32 +252,55 @@ def get_detection_performance(db: Session, tenant_bank_id: str) -> dict[str, Any
       reconciliation breaks -- a variance flagged before the source
       system's own official BREAK verdict caught up to it (see
       app/reconciliation/breaks.py's module docstring).
+
+    start_date/end_date scope coverage and exposure-identified-early to
+    that real transaction window. confirmation_rate/false_positive_rate/
+    quality_trend are deliberately NOT scoped by it -- those are about
+    *when an analyst reviewed a claim*, a different real timeline than
+    when the underlying transaction happened, and filtering by transaction
+    date would misrepresent review activity that happened outside the
+    selected window but on a claim whose transaction fell inside it (or
+    vice versa). pattern_mix is a current-state snapshot of every flagged
+    entity's category match, same reasoning.
     """
-    total_transactions = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id).count()
+    lower, upper = occurred_at_bounds(start_date, end_date)
+
+    def _scoped(query):
+        if lower:
+            query = query.filter(CanonicalEvent.transaction_occurred_at >= lower)
+        if upper:
+            query = query.filter(CanonicalEvent.transaction_occurred_at < upper)
+        return query
+
+    total_transactions = _scoped(db.query(CanonicalEvent).filter(CanonicalEvent.tenant_bank_id == tenant_bank_id)).count()
     resolved_filter = or_(CanonicalEvent.merchant_id.isnot(None), CanonicalEvent.individual_id.isnot(None))
-    covered_transactions = (
-        db.query(CanonicalEvent).filter(CanonicalEvent.tenant_bank_id == tenant_bank_id, resolved_filter).count()
-    )
+    covered_transactions = _scoped(
+        db.query(CanonicalEvent).filter(CanonicalEvent.tenant_bank_id == tenant_bank_id, resolved_filter)
+    ).count()
 
     coverage_by_rail = []
     rail_types = [r for (r,) in db.query(CanonicalEvent.rail_type).filter_by(tenant_bank_id=tenant_bank_id).distinct().all()]
     for rail_type in sorted(rail_types):
-        rail_total = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, rail_type=rail_type).count()
-        rail_covered = (
-            db.query(CanonicalEvent)
-            .filter(CanonicalEvent.tenant_bank_id == tenant_bank_id, CanonicalEvent.rail_type == rail_type, resolved_filter)
-            .count()
-        )
+        rail_total = _scoped(
+            db.query(CanonicalEvent).filter(CanonicalEvent.tenant_bank_id == tenant_bank_id, CanonicalEvent.rail_type == rail_type)
+        ).count()
+        rail_covered = _scoped(
+            db.query(CanonicalEvent).filter(
+                CanonicalEvent.tenant_bank_id == tenant_bank_id, CanonicalEvent.rail_type == rail_type, resolved_filter,
+            )
+        ).count()
         coverage_by_rail.append({
             "rail_type": rail_type,
             "coverage_rate": (rail_covered / rail_total) if rail_total else None,
         })
 
-    early_breaks = (
-        db.query(ReconciliationBreak)
-        .filter_by(tenant_bank_id=tenant_bank_id, detection_type="PROVISIONAL_VARIANCE")
-        .all()
-    )
+    # Same join as get_overview's reconciliation_break_counts -- a break
+    # has no date column of its own.
+    early_breaks = [
+        b
+        for b in db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id, detection_type="PROVISIONAL_VARIANCE").all()
+        if date_in_range(_reconciliation_break_date(db, tenant_bank_id, b), start_date, end_date)
+    ]
     exposure_identified_early = sum(abs(b.amount) for b in early_breaks if b.amount is not None)
 
     review = get_review_summary(db, tenant_bank_id)
