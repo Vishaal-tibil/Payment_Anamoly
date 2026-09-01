@@ -765,6 +765,40 @@
             }
           },
           {
+            "name": "start_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "name": "end_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -1009,6 +1043,40 @@
                 }
               ],
               "title": "Beneficiary Key"
+            }
+          },
+          {
+            "name": "start_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "name": "end_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
             }
           },
           {
@@ -1893,6 +1961,40 @@
               "type": "string",
               "title": "Tenant Bank Id"
             }
+          },
+          {
+            "name": "start_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "name": "end_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
           }
         ],
         "responses": {
@@ -1934,6 +2036,40 @@
             "schema": {
               "type": "string",
               "title": "Tenant Bank Id"
+            }
+          },
+          {
+            "name": "start_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "name": "end_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
             }
           }
         ],
@@ -1988,7 +2124,7 @@
     "/dashboard/detection-performance": {
       "get": {
         "summary": "Dashboard Detection Performance",
-        "description": "Real detection-performance metrics -- see get_detection_performance's\ndocstring for why confirmation/false-positive rate are grounded in the\nanalyst review workflow (real, but grows more meaningful as review\nactivity accumulates) while coverage and exposure-identified-early are\nfully real right now.",
+        "description": "Real detection-performance metrics -- see get_detection_performance's\ndocstring for why confirmation/false-positive rate are grounded in the\nanalyst review workflow (real, but grows more meaningful as review\nactivity accumulates) while coverage and exposure-identified-early are\nfully real right now. start_date/end_date scope coverage and\nexposure-identified-early only -- see that docstring for why the rest\nstays unfiltered.",
         "operationId": "dashboard_detection_performance_dashboard_detection_performance_get",
         "parameters": [
           {
@@ -1998,6 +2134,40 @@
             "schema": {
               "type": "string",
               "title": "Tenant Bank Id"
+            }
+          },
+          {
+            "name": "start_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "name": "end_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
             }
           }
         ],
@@ -2064,7 +2234,7 @@
     "/dashboard/exposure": {
       "get": {
         "summary": "Dashboard Exposure",
-        "description": "Real-dollar exposure views -- see app/exposure.py for exactly what\n\"exposure\" and \"mitigated\" mean here and why. Combined into one call\nsince the Overview and Anomalies pages each read a subset of the same\nunderlying real claims (see app/exposure.py's _all_claims()).",
+        "description": "Real-dollar exposure views -- see app/exposure.py for exactly what\n\"exposure\" and \"mitigated\" mean here and why. Combined into one call\nsince the Overview and Anomalies pages each read a subset of the same\nunderlying real claims (see app/exposure.py's _all_claims()).\nstart_date/end_date (optional \"YYYY-MM-DD\") scope every figure here to\nthat real transaction window.",
         "operationId": "dashboard_exposure_dashboard_exposure_get",
         "parameters": [
           {
@@ -2074,6 +2244,40 @@
             "schema": {
               "type": "string",
               "title": "Tenant Bank Id"
+            }
+          },
+          {
+            "name": "start_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "name": "end_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
             }
           }
         ],

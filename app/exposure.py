@@ -24,12 +24,13 @@ still visible elsewhere (dashboard.py's operational_issue_counts).
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from .anomaly.models import EntitySnapshot
+from .date_filter import date_in_range, occurred_at_bounds
 from .models import CanonicalEvent
 from .operations.models import OperationalIssue
 from .reconciliation.models import ReconciliationBreak
@@ -85,6 +86,7 @@ def _fraud_anomaly_claims(db: Session, tenant_bank_id: str) -> list[dict[str, An
             "amount": row.amount_total or 0.0,
             "rail_type": None,  # an entity, not a single-rail transaction
             "week_start": _week_start(row.window_end) if row.window_end else None,
+            "occurred": row.window_end,
         })
     return claims
 
@@ -105,6 +107,7 @@ def _reconciliation_claims(db: Session, tenant_bank_id: str) -> list[dict[str, A
             "amount": abs(brk.amount) if brk.amount is not None else 0.0,
             "rail_type": brk.rail_type,
             "week_start": _week_start(occurred) if occurred else None,
+            "occurred": occurred,
         })
     return claims
 
@@ -141,19 +144,32 @@ def _operational_claims(db: Session, tenant_bank_id: str) -> list[dict[str, Any]
             "amount": amount,
             "rail_type": rail_type,
             "week_start": _week_start(occurred) if occurred else None,
+            "occurred": occurred,
         })
     return claims
 
 
-def _all_claims(db: Session, tenant_bank_id: str) -> list[dict[str, Any]]:
-    return (
+def _all_claims(
+    db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
+) -> list[dict[str, Any]]:
+    claims = (
         _fraud_anomaly_claims(db, tenant_bank_id)
         + _reconciliation_claims(db, tenant_bank_id)
         + _operational_claims(db, tenant_bank_id)
     )
+    if start_date is None and end_date is None:
+        return claims
+    # Real occurred date per claim (see each _*_claims() above) -- a claim
+    # whose join found no underlying transaction date is excluded once a
+    # range is active, an honest "can't place this in time" rather than a
+    # silent include. Same reasoning as date_filter.date_in_range's own
+    # docstring.
+    return [c for c in claims if date_in_range(c["occurred"], start_date, end_date)]
 
 
-def get_payment_normalcy(db: Session, tenant_bank_id: str) -> dict[str, Any]:
+def get_payment_normalcy(
+    db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
+) -> dict[str, Any]:
     """"Payments completed normally" -- the fraction of real transactions
     NOT touched by any detected reconciliation break or transaction/batch-
     level operational issue. Deliberately transaction-level, unlike
@@ -162,12 +178,34 @@ def get_payment_normalcy(db: Session, tenant_bank_id: str) -> dict[str, Any]:
     problem," so they're excluded here the same way the two rate-based
     operational issue types are excluded from _all_claims()'s $ figures --
     there's no single transaction to mark as "not normal" for either.
+
+    start_date/end_date scope both totals to the same real transaction
+    window -- both total_transactions and touched are counted from
+    within-range events only, so the rate stays a real ratio, not a
+    filtered numerator over an unfiltered denominator.
     """
-    total_transactions = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id).count()
+    lower, upper = occurred_at_bounds(start_date, end_date)
+
+    def _scoped(query):
+        if lower:
+            query = query.filter(CanonicalEvent.transaction_occurred_at >= lower)
+        if upper:
+            query = query.filter(CanonicalEvent.transaction_occurred_at < upper)
+        return query
+
+    total_transactions = _scoped(db.query(CanonicalEvent).filter(CanonicalEvent.tenant_bank_id == tenant_bank_id)).count()
+    in_range_events: set[tuple[str, str]] = {
+        (rail_type, transaction_id)
+        for (rail_type, transaction_id) in _scoped(
+            db.query(CanonicalEvent.rail_type, CanonicalEvent.transaction_id).filter(CanonicalEvent.tenant_bank_id == tenant_bank_id)
+        ).all()
+    }
 
     touched: set[tuple[str, str]] = set()
     for brk in db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id).all():
-        touched.add((brk.rail_type, brk.transaction_id))
+        key = (brk.rail_type, brk.transaction_id)
+        if key in in_range_events:
+            touched.add(key)
 
     for issue in (
         db.query(OperationalIssue)
@@ -176,7 +214,9 @@ def get_payment_normalcy(db: Session, tenant_bank_id: str) -> dict[str, Any]:
     ):
         event = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, transaction_id=issue.reference_id).first()
         if event:
-            touched.add((event.rail_type, event.transaction_id))
+            key = (event.rail_type, event.transaction_id)
+            if key in in_range_events:
+                touched.add(key)
 
     for issue in (
         db.query(OperationalIssue)
@@ -184,7 +224,9 @@ def get_payment_normalcy(db: Session, tenant_bank_id: str) -> dict[str, Any]:
         .all()
     ):
         for event in db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, batch_id=issue.reference_id).all():
-            touched.add((event.rail_type, event.transaction_id))
+            key = (event.rail_type, event.transaction_id)
+            if key in in_range_events:
+                touched.add(key)
 
     return {
         "rate": ((total_transactions - len(touched)) / total_transactions) if total_transactions else None,
@@ -193,8 +235,10 @@ def get_payment_normalcy(db: Session, tenant_bank_id: str) -> dict[str, Any]:
     }
 
 
-def get_exposure_by_domain(db: Session, tenant_bank_id: str) -> dict[str, Any]:
-    claims = _all_claims(db, tenant_bank_id)
+def get_exposure_by_domain(
+    db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
+) -> dict[str, Any]:
+    claims = _all_claims(db, tenant_bank_id, start_date, end_date)
     totals: dict[str, float] = defaultdict(float)
     for claim in claims:
         totals[claim["signal_type"]] += claim["amount"]
@@ -211,7 +255,9 @@ def get_exposure_by_domain(db: Session, tenant_bank_id: str) -> dict[str, Any]:
     return {"domains": domains, "total": round(sum(totals.values()), 2)}
 
 
-def get_exposure_trend(db: Session, tenant_bank_id: str) -> dict[str, Any]:
+def get_exposure_trend(
+    db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
+) -> dict[str, Any]:
     """Weekly, not daily -- this dataset's real granularity (Track A's own
     windowing is weekly; detection-run timestamps cluster on whichever day
     the pipeline happened to run, so bucketing by *that* would produce a
@@ -219,7 +265,7 @@ def get_exposure_trend(db: Session, tenant_bank_id: str) -> dict[str, Any]:
     week the underlying transaction occurred (Monday-start, same
     convention as app/anomaly/features.py), not by when it was detected.
     """
-    claims = _all_claims(db, tenant_bank_id)
+    claims = _all_claims(db, tenant_bank_id, start_date, end_date)
     by_week: dict[datetime, float] = defaultdict(float)
     for claim in claims:
         if claim["week_start"] is not None:
@@ -232,7 +278,9 @@ def get_exposure_trend(db: Session, tenant_bank_id: str) -> dict[str, Any]:
     return {"points": points}
 
 
-def get_mitigation_progress(db: Session, tenant_bank_id: str) -> dict[str, Any]:
+def get_mitigation_progress(
+    db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
+) -> dict[str, Any]:
     """Residual = dollar exposure of claims no analyst has acted on yet
     (PENDING, or never reviewed at all). Mitigated = dollar exposure of
     claims an analyst has CONFIRMED or DISMISSED. This is the one real
@@ -243,7 +291,7 @@ def get_mitigation_progress(db: Session, tenant_bank_id: str) -> dict[str, Any]:
     real trend would mostly be zero followed by a step change, which
     would look more like a chart bug than real data.
     """
-    claims = _all_claims(db, tenant_bank_id)
+    claims = _all_claims(db, tenant_bank_id, start_date, end_date)
     residual = 0.0
     mitigated = 0.0
     for claim in claims:
@@ -265,12 +313,14 @@ def get_mitigation_progress(db: Session, tenant_bank_id: str) -> dict[str, Any]:
     }
 
 
-def get_mitigation_progress_by_domain(db: Session, tenant_bank_id: str) -> dict[str, Any]:
+def get_mitigation_progress_by_domain(
+    db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
+) -> dict[str, Any]:
     """Same residual/mitigated split as get_mitigation_progress(), broken
     out per engine instead of combined into one total -- what the
     Anomalies page's "Mitigated vs. Residual Exposure" column reads.
     """
-    claims = _all_claims(db, tenant_bank_id)
+    claims = _all_claims(db, tenant_bank_id, start_date, end_date)
     labels = {
         "fraud_anomaly": "Fraud / Anomaly",
         "reconciliation_break": "Reconciliation",
@@ -295,22 +345,31 @@ def get_mitigation_progress_by_domain(db: Session, tenant_bank_id: str) -> dict[
     return {"domains": domains}
 
 
-def get_payment_value_by_rail(db: Session, tenant_bank_id: str) -> dict[str, Any]:
+def get_payment_value_by_rail(
+    db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
+) -> dict[str, Any]:
     """Protected vs Impacted per real rail (ACH/WIRE/CARD/FEDNOW/CHEQUE --
     never a rail that doesn't exist in this schema). Impacted is only ever
     computed from Reconciliation breaks (the only claim type with a
     definite per-rail amount and rail_type on every row); Protected is
     each rail's real total transaction volume minus that.
     """
-    rail_totals: dict[str, float] = defaultdict(float)
-    for (rail_type, amount) in db.query(CanonicalEvent.rail_type, CanonicalEvent.amount).filter(
+    lower, upper = occurred_at_bounds(start_date, end_date)
+    events_query = db.query(CanonicalEvent.rail_type, CanonicalEvent.amount).filter(
         CanonicalEvent.tenant_bank_id == tenant_bank_id, CanonicalEvent.amount.isnot(None),
-    ).all():
+    )
+    if lower:
+        events_query = events_query.filter(CanonicalEvent.transaction_occurred_at >= lower)
+    if upper:
+        events_query = events_query.filter(CanonicalEvent.transaction_occurred_at < upper)
+
+    rail_totals: dict[str, float] = defaultdict(float)
+    for (rail_type, amount) in events_query.all():
         rail_totals[rail_type] += amount
 
     impacted_by_rail: dict[str, float] = defaultdict(float)
     for claim in _reconciliation_claims(db, tenant_bank_id):
-        if claim["rail_type"]:
+        if claim["rail_type"] and date_in_range(claim["occurred"], start_date, end_date):
             impacted_by_rail[claim["rail_type"]] += claim["amount"]
 
     rails = []
