@@ -15,7 +15,9 @@ exist anywhere in the actual data.
 """
 from __future__ import annotations
 
+import statistics
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import func, or_
@@ -144,6 +146,145 @@ def get_senior_overview(db: Session, tenant_bank_id: str) -> dict[str, Any]:
     }
 
 
+def _parse_ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _as_utc(dt: datetime) -> datetime:
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _detection_latencies(db: Session, tenant_bank_id: str) -> list[tuple[str | None, float]]:
+    """(rail_type, latency_seconds) for every signal where a real
+    transaction timestamp is resolvable: TRANSACTION-referenced
+    OperationalIssue rows and all ReconciliationBreak rows (both always
+    carry a transaction_id). Party/batch-referenced OperationalIssue rows
+    and EntitySnapshot windows have no single transaction to diff
+    against, so they're excluded -- a real subset, not padded to cover
+    every signal type.
+    """
+    latencies: list[tuple[str | None, float]] = []
+
+    for issue in db.query(OperationalIssue).filter_by(tenant_bank_id=tenant_bank_id, reference_type="TRANSACTION").all():
+        event = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, transaction_id=issue.reference_id).first()
+        occurred = _parse_ts(event.transaction_occurred_at) if event else None
+        if occurred is None:
+            continue
+        latency = (_as_utc(issue.detected_at) - occurred).total_seconds()
+        if latency >= 0:
+            latencies.append((event.rail_type, latency))
+
+    for brk in db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id).all():
+        event = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, transaction_id=brk.transaction_id).first()
+        occurred = _parse_ts(event.transaction_occurred_at) if event else None
+        if occurred is None:
+            continue
+        latency = (_as_utc(brk.detected_at) - occurred).total_seconds()
+        if latency >= 0:
+            latencies.append((brk.rail_type, latency))
+
+    return latencies
+
+
+def _detection_volume_by_category(db: Session, tenant_bank_id: str) -> list[dict[str, Any]]:
+    """Reclassifies counts already computed elsewhere (operational issue
+    rows, reconciliation break rows, scored fraud snapshots) into one
+    percentage breakdown -- not new data, a different grouping of it.
+    """
+    operational_count = db.query(OperationalIssue).filter_by(tenant_bank_id=tenant_bank_id).count()
+    reconciliation_count = db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id).count()
+    fraud_count = (
+        db.query(EntitySnapshot)
+        .filter(EntitySnapshot.tenant_bank_id == tenant_bank_id, EntitySnapshot.anomaly_band.isnot(None))
+        .count()
+    )
+    total = operational_count + reconciliation_count + fraud_count
+
+    def _pct(count: int) -> float | None:
+        return (count / total) if total else None
+
+    return [
+        {"category": "Operational", "count": operational_count, "percentage": _pct(operational_count)},
+        {"category": "Fraud", "count": fraud_count, "percentage": _pct(fraud_count)},
+        {"category": "Reconciliation", "count": reconciliation_count, "percentage": _pct(reconciliation_count)},
+    ]
+
+
+def _detection_performance_by_rail(
+    db: Session, tenant_bank_id: str, latencies: list[tuple[str | None, float]],
+) -> list[dict[str, Any]]:
+    """Per rail: success_rate (fraction of that rail's transactions NOT
+    referenced by any OperationalIssue/ReconciliationBreak) + median
+    detection latency for the signals on that rail with a resolvable one.
+    """
+    latency_by_rail: dict[str, list[float]] = defaultdict(list)
+    for rail, lat in latencies:
+        if rail:
+            latency_by_rail[rail].append(lat)
+
+    flagged_txn_ids_by_rail: dict[str, set[str]] = defaultdict(set)
+    for issue in db.query(OperationalIssue).filter_by(tenant_bank_id=tenant_bank_id, reference_type="TRANSACTION").all():
+        event = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, transaction_id=issue.reference_id).first()
+        if event:
+            flagged_txn_ids_by_rail[event.rail_type].add(issue.reference_id)
+    for brk in db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id).all():
+        flagged_txn_ids_by_rail[brk.rail_type].add(brk.transaction_id)
+
+    rail_types = [r for (r,) in db.query(CanonicalEvent.rail_type).filter_by(tenant_bank_id=tenant_bank_id).distinct().all()]
+    result = []
+    for rail_type in sorted(rail_types):
+        rail_total = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, rail_type=rail_type).count()
+        flagged = len(flagged_txn_ids_by_rail.get(rail_type, set()))
+        result.append({
+            "rail_type": rail_type,
+            "success_rate": (1 - flagged / rail_total) if rail_total else None,
+            "median_detection_latency_seconds": (
+                statistics.median(latency_by_rail[rail_type]) if latency_by_rail.get(rail_type) else None
+            ),
+        })
+    return result
+
+
+def _new_patterns_detected(db: Session, tenant_bank_id: str, recent_days: int = 7) -> int:
+    """Count of distinct categories (OperationalIssue.issue_type /
+    ReconciliationBreak.detection_type) whose EARLIEST detected_at for
+    this tenant falls within the most recent `recent_days` -- i.e. a
+    pattern genuinely new this period, not one that's always been present
+    and just recurred. "Recent" is relative to the data's own most recent
+    detected_at, not wall-clock now() -- this is synthetic pilot data
+    with a fixed date range, so a real-time cutoff would silently go to
+    zero once wall-clock time moves past that range (same reasoning
+    compute_snapshots() uses the data's own timestamps for its
+    chronological train/test split instead of real time).
+    """
+    first_seen: dict[str, datetime] = {}
+    all_detected_ats: list[datetime] = []
+
+    for issue_type, detected_at in db.query(OperationalIssue.issue_type, OperationalIssue.detected_at).filter_by(tenant_bank_id=tenant_bank_id).all():
+        ts = _as_utc(detected_at)
+        all_detected_ats.append(ts)
+        if issue_type not in first_seen or ts < first_seen[issue_type]:
+            first_seen[issue_type] = ts
+    for detection_type, detected_at in db.query(ReconciliationBreak.detection_type, ReconciliationBreak.detected_at).filter_by(tenant_bank_id=tenant_bank_id).all():
+        ts = _as_utc(detected_at)
+        all_detected_ats.append(ts)
+        if detection_type not in first_seen or ts < first_seen[detection_type]:
+            first_seen[detection_type] = ts
+
+    if not all_detected_ats:
+        return 0
+    recent_cutoff = max(all_detected_ats) - timedelta(days=recent_days)
+    return sum(1 for ts in first_seen.values() if ts >= recent_cutoff)
+
+
 def get_detection_performance(db: Session, tenant_bank_id: str) -> dict[str, Any]:
     """Real detection-performance metrics -- deliberately NOT the
     "Detection Effectiveness %" / "False Positive Rate" the original
@@ -198,6 +339,8 @@ def get_detection_performance(db: Session, tenant_bank_id: str) -> dict[str, Any
     review = get_review_summary(db, tenant_bank_id)
     reviewed_count = review["confirmed"] + review["dismissed"]
 
+    latencies = _detection_latencies(db, tenant_bank_id)
+
     return {
         "coverage_rate": (covered_transactions / total_transactions) if total_transactions else None,
         "covered_transactions": covered_transactions,
@@ -211,6 +354,10 @@ def get_detection_performance(db: Session, tenant_bank_id: str) -> dict[str, Any
         "pending_count": review["pending"],
         "confirmed_count": review["confirmed"],
         "dismissed_count": review["dismissed"],
+        "median_detection_time_seconds": statistics.median([lat for _, lat in latencies]) if latencies else None,
+        "detection_volume_by_category": _detection_volume_by_category(db, tenant_bank_id),
+        "detection_performance_by_rail": _detection_performance_by_rail(db, tenant_bank_id, latencies),
+        "new_patterns_detected": _new_patterns_detected(db, tenant_bank_id),
         "quality_trend": get_review_quality_trend(db, tenant_bank_id),
         "pattern_mix": get_pattern_mix(db, tenant_bank_id),
     }
