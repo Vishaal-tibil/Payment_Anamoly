@@ -345,6 +345,48 @@ def get_mitigation_progress_by_domain(
     return {"domains": domains}
 
 
+def get_exposure_by_rail(
+    db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
+) -> dict[str, Any]:
+    """Same claims _all_claims() already computes, grouped by rail_type
+    instead of domain. Fraud/Anomaly claims carry rail_type=None (an
+    entity, not a single-rail transaction -- see _fraud_anomaly_claims),
+    so they're excluded here the same way they're excluded from
+    get_payment_value_by_rail() -- no invented rail attribution.
+    """
+    claims = _all_claims(db, tenant_bank_id, start_date, end_date)
+    totals: dict[str, float] = defaultdict(float)
+    for claim in claims:
+        if claim["rail_type"]:
+            totals[claim["rail_type"]] += claim["amount"]
+
+    rails = [{"rail_type": rail, "exposure": round(amount, 2)} for rail, amount in sorted(totals.items())]
+    return {"rails": rails, "total": round(sum(totals.values()), 2)}
+
+
+def get_anomaly_heatmap(
+    db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
+) -> dict[str, Any]:
+    """Rail x category cross-tab, counting claims (not dollar amounts).
+    Same rail-attribution limitation as get_exposure_by_rail() -- Fraud/
+    Anomaly claims have no single rail, so only Operational and
+    Reconciliation claims appear here.
+    """
+    claims = _all_claims(db, tenant_bank_id, start_date, end_date)
+    domain_labels = {"operational_issue": "Operational", "reconciliation_break": "Reconciliation"}
+    counts: dict[tuple[str, str], int] = defaultdict(int)
+    for claim in claims:
+        label = domain_labels.get(claim["signal_type"])
+        if claim["rail_type"] and label:
+            counts[(claim["rail_type"], label)] += 1
+
+    cells = [
+        {"rail_type": rail, "category": category, "count": count}
+        for (rail, category), count in sorted(counts.items())
+    ]
+    return {"cells": cells}
+
+
 def get_payment_value_by_rail(
     db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
 ) -> dict[str, Any]:

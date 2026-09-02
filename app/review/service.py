@@ -3,7 +3,7 @@ tenant-wide summary the senior view reads from.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -161,3 +161,45 @@ def get_review_quality_trend(db: Session, tenant_bank_id: str) -> list[dict[str,
             "reviewed_count": reviewed_so_far,
         })
     return points
+
+
+def get_review_quality_trend_daily(db: Session, tenant_bank_id: str, days: int = 7) -> list[dict[str, Any]]:
+    """Confirmed/dismissed counts per calendar day, over the last `days`
+    days of this tenant's own review activity (not wall-clock "now" --
+    same reasoning app/dashboard.py's _new_patterns_detected() uses:
+    this is synthetic pilot data with its own fixed timeline, so a
+    real-time cutoff would silently go to zero once wall-clock time moves
+    past that range). Honestly sparse/empty on days with no real review
+    activity -- never backfilled or interpolated.
+    """
+    reviews = (
+        db.query(AnalystReview)
+        .filter(
+            AnalystReview.tenant_bank_id == tenant_bank_id,
+            AnalystReview.status.in_((CONFIRMED, DISMISSED)),
+            AnalystReview.reviewed_at.isnot(None),
+        )
+        .order_by(AnalystReview.reviewed_at.asc())
+        .all()
+    )
+    if not reviews:
+        return []
+
+    def _as_utc(dt: datetime) -> datetime:
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+    latest = max(_as_utc(r.reviewed_at) for r in reviews)
+    cutoff = (latest - timedelta(days=days - 1)).date()
+
+    by_day: dict[Any, dict[str, int]] = {}
+    for review in reviews:
+        day = _as_utc(review.reviewed_at).date()
+        if day < cutoff:
+            continue
+        bucket = by_day.setdefault(day, {"confirmed": 0, "dismissed": 0})
+        bucket["confirmed" if review.status == CONFIRMED else "dismissed"] += 1
+
+    return [
+        {"date": day.isoformat(), "confirmed": counts["confirmed"], "dismissed": counts["dismissed"]}
+        for day, counts in sorted(by_day.items())
+    ]
