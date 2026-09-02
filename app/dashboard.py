@@ -28,21 +28,67 @@ from .anomaly.models import EntitySnapshot
 from .health.models import PaymentHealthScore
 from .models import CanonicalEvent, Individual, Merchant
 from .operations.models import OperationalIssue
+from .query_filters import parse_date_bound, string_date_bounds
 from .reconciliation.models import ReconciliationBreak
 from .review.service import get_review_quality_trend, get_review_summary
 
 
-def get_overview(db: Session, tenant_bank_id: str) -> dict[str, Any]:
-    total_transactions = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id).count()
+def _events_query(db: Session, tenant_bank_id: str, start_date: str | None, end_date: str | None):
+    start_str, end_str = string_date_bounds(start_date, end_date)
+    query = db.query(CanonicalEvent).filter(CanonicalEvent.tenant_bank_id == tenant_bank_id)
+    if start_str:
+        query = query.filter(CanonicalEvent.transaction_occurred_at >= start_str)
+    if end_str:
+        query = query.filter(CanonicalEvent.transaction_occurred_at <= end_str)
+    return query
+
+
+def _issues_query(db: Session, tenant_bank_id: str, start_date: str | None, end_date: str | None):
+    start_dt, end_dt = parse_date_bound(start_date), parse_date_bound(end_date, end_of_day=True)
+    query = db.query(OperationalIssue).filter(OperationalIssue.tenant_bank_id == tenant_bank_id)
+    if start_dt:
+        query = query.filter(OperationalIssue.detected_at >= start_dt)
+    if end_dt:
+        query = query.filter(OperationalIssue.detected_at <= end_dt)
+    return query
+
+
+def _breaks_query(db: Session, tenant_bank_id: str, start_date: str | None, end_date: str | None):
+    start_dt, end_dt = parse_date_bound(start_date), parse_date_bound(end_date, end_of_day=True)
+    query = db.query(ReconciliationBreak).filter(ReconciliationBreak.tenant_bank_id == tenant_bank_id)
+    if start_dt:
+        query = query.filter(ReconciliationBreak.detected_at >= start_dt)
+    if end_dt:
+        query = query.filter(ReconciliationBreak.detected_at <= end_dt)
+    return query
+
+
+def _snapshots_query(db: Session, tenant_bank_id: str, start_date: str | None, end_date: str | None):
+    start_dt, end_dt = parse_date_bound(start_date), parse_date_bound(end_date, end_of_day=True)
+    query = db.query(EntitySnapshot).filter(EntitySnapshot.tenant_bank_id == tenant_bank_id)
+    if start_dt:
+        query = query.filter(EntitySnapshot.window_end >= start_dt)
+    if end_dt:
+        query = query.filter(EntitySnapshot.window_end <= end_dt)
+    return query
+
+
+def get_overview(
+    db: Session, tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None,
+) -> dict[str, Any]:
+    total_transactions = _events_query(db, tenant_bank_id, start_date, end_date).count()
     settled_transactions = (
-        db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, status="SETTLED").count()
+        _events_query(db, tenant_bank_id, start_date, end_date).filter(CanonicalEvent.status == "SETTLED").count()
     )
     total_merchants = db.query(Merchant).filter_by(tenant_bank_id=tenant_bank_id).count()
     total_individuals = db.query(Individual).filter_by(tenant_bank_id=tenant_bank_id).count()
 
     # transaction_occurred_at is a String/ISO8601 column (see CanonicalEvent's
     # own docstring for why) -- MIN/MAX on it is still correct chronological
-    # ordering since ISO8601's lexicographic order matches time order.
+    # ordering since ISO8601's lexicographic order matches time order. Always
+    # the real full-dataset span, regardless of start_date/end_date below --
+    # this is what the UI's Date Range label shows next to the filter itself,
+    # not something that should shrink to match whatever's currently selected.
     date_range_start, date_range_end = (
         db.query(func.min(CanonicalEvent.transaction_occurred_at), func.max(CanonicalEvent.transaction_occurred_at))
         .filter(CanonicalEvent.tenant_bank_id == tenant_bank_id, CanonicalEvent.transaction_occurred_at.isnot(None))
@@ -50,16 +96,16 @@ def get_overview(db: Session, tenant_bank_id: str) -> dict[str, Any]:
     )
 
     anomaly_band_counts: dict[str, int] = defaultdict(int)
-    for (band,) in db.query(EntitySnapshot.anomaly_band).filter_by(tenant_bank_id=tenant_bank_id).all():
+    for (band,) in _snapshots_query(db, tenant_bank_id, start_date, end_date).with_entities(EntitySnapshot.anomaly_band).all():
         if band:
             anomaly_band_counts[band] += 1
 
     operational_issue_counts: dict[str, int] = defaultdict(int)
-    for (issue_type,) in db.query(OperationalIssue.issue_type).filter_by(tenant_bank_id=tenant_bank_id).all():
+    for (issue_type,) in _issues_query(db, tenant_bank_id, start_date, end_date).with_entities(OperationalIssue.issue_type).all():
         operational_issue_counts[issue_type] += 1
 
     reconciliation_break_counts: dict[str, int] = defaultdict(int)
-    for (detection_type,) in db.query(ReconciliationBreak.detection_type).filter_by(tenant_bank_id=tenant_bank_id).all():
+    for (detection_type,) in _breaks_query(db, tenant_bank_id, start_date, end_date).with_entities(ReconciliationBreak.detection_type).all():
         reconciliation_break_counts[detection_type] += 1
 
     return {
@@ -76,15 +122,17 @@ def get_overview(db: Session, tenant_bank_id: str) -> dict[str, Any]:
     }
 
 
-def get_rail_stats(db: Session, tenant_bank_id: str) -> dict[str, Any]:
-    events = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id).all()
+def get_rail_stats(
+    db: Session, tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None,
+) -> dict[str, Any]:
+    events = _events_query(db, tenant_bank_id, start_date, end_date).all()
 
     by_rail: dict[str, list[CanonicalEvent]] = defaultdict(list)
     for event in events:
         by_rail[event.rail_type].append(event)
 
     break_counts_by_rail: dict[str, int] = defaultdict(int)
-    for (rail_type,) in db.query(ReconciliationBreak.rail_type).filter_by(tenant_bank_id=tenant_bank_id).all():
+    for (rail_type,) in _breaks_query(db, tenant_bank_id, start_date, end_date).with_entities(ReconciliationBreak.rail_type).all():
         break_counts_by_rail[rail_type] += 1
 
     rails = []
@@ -162,7 +210,9 @@ def _as_utc(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def _detection_latencies(db: Session, tenant_bank_id: str) -> list[tuple[str | None, float]]:
+def _detection_latencies(
+    db: Session, tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None,
+) -> list[tuple[str | None, float]]:
     """(rail_type, latency_seconds) for every signal where a real
     transaction timestamp is resolvable: TRANSACTION-referenced
     OperationalIssue rows and all ReconciliationBreak rows (both always
@@ -173,7 +223,7 @@ def _detection_latencies(db: Session, tenant_bank_id: str) -> list[tuple[str | N
     """
     latencies: list[tuple[str | None, float]] = []
 
-    for issue in db.query(OperationalIssue).filter_by(tenant_bank_id=tenant_bank_id, reference_type="TRANSACTION").all():
+    for issue in _issues_query(db, tenant_bank_id, start_date, end_date).filter(OperationalIssue.reference_type == "TRANSACTION").all():
         event = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, transaction_id=issue.reference_id).first()
         occurred = _parse_ts(event.transaction_occurred_at) if event else None
         if occurred is None:
@@ -182,7 +232,7 @@ def _detection_latencies(db: Session, tenant_bank_id: str) -> list[tuple[str | N
         if latency >= 0:
             latencies.append((event.rail_type, latency))
 
-    for brk in db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id).all():
+    for brk in _breaks_query(db, tenant_bank_id, start_date, end_date).all():
         event = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, transaction_id=brk.transaction_id).first()
         occurred = _parse_ts(event.transaction_occurred_at) if event else None
         if occurred is None:
@@ -194,16 +244,18 @@ def _detection_latencies(db: Session, tenant_bank_id: str) -> list[tuple[str | N
     return latencies
 
 
-def _detection_volume_by_category(db: Session, tenant_bank_id: str) -> list[dict[str, Any]]:
+def _detection_volume_by_category(
+    db: Session, tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None,
+) -> list[dict[str, Any]]:
     """Reclassifies counts already computed elsewhere (operational issue
     rows, reconciliation break rows, scored fraud snapshots) into one
     percentage breakdown -- not new data, a different grouping of it.
     """
-    operational_count = db.query(OperationalIssue).filter_by(tenant_bank_id=tenant_bank_id).count()
-    reconciliation_count = db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id).count()
+    operational_count = _issues_query(db, tenant_bank_id, start_date, end_date).count()
+    reconciliation_count = _breaks_query(db, tenant_bank_id, start_date, end_date).count()
     fraud_count = (
-        db.query(EntitySnapshot)
-        .filter(EntitySnapshot.tenant_bank_id == tenant_bank_id, EntitySnapshot.anomaly_band.isnot(None))
+        _snapshots_query(db, tenant_bank_id, start_date, end_date)
+        .filter(EntitySnapshot.anomaly_band.isnot(None))
         .count()
     )
     total = operational_count + reconciliation_count + fraud_count
@@ -219,7 +271,11 @@ def _detection_volume_by_category(db: Session, tenant_bank_id: str) -> list[dict
 
 
 def _detection_performance_by_rail(
-    db: Session, tenant_bank_id: str, latencies: list[tuple[str | None, float]],
+    db: Session,
+    tenant_bank_id: str,
+    latencies: list[tuple[str | None, float]],
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> list[dict[str, Any]]:
     """Per rail: success_rate (fraction of that rail's transactions NOT
     referenced by any OperationalIssue/ReconciliationBreak) + median
@@ -231,17 +287,17 @@ def _detection_performance_by_rail(
             latency_by_rail[rail].append(lat)
 
     flagged_txn_ids_by_rail: dict[str, set[str]] = defaultdict(set)
-    for issue in db.query(OperationalIssue).filter_by(tenant_bank_id=tenant_bank_id, reference_type="TRANSACTION").all():
+    for issue in _issues_query(db, tenant_bank_id, start_date, end_date).filter(OperationalIssue.reference_type == "TRANSACTION").all():
         event = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, transaction_id=issue.reference_id).first()
         if event:
             flagged_txn_ids_by_rail[event.rail_type].add(issue.reference_id)
-    for brk in db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id).all():
+    for brk in _breaks_query(db, tenant_bank_id, start_date, end_date).all():
         flagged_txn_ids_by_rail[brk.rail_type].add(brk.transaction_id)
 
     rail_types = [r for (r,) in db.query(CanonicalEvent.rail_type).filter_by(tenant_bank_id=tenant_bank_id).distinct().all()]
     result = []
     for rail_type in sorted(rail_types):
-        rail_total = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, rail_type=rail_type).count()
+        rail_total = _events_query(db, tenant_bank_id, start_date, end_date).filter(CanonicalEvent.rail_type == rail_type).count()
         flagged = len(flagged_txn_ids_by_rail.get(rail_type, set()))
         result.append({
             "rail_type": rail_type,
@@ -285,7 +341,9 @@ def _new_patterns_detected(db: Session, tenant_bank_id: str, recent_days: int = 
     return sum(1 for ts in first_seen.values() if ts >= recent_cutoff)
 
 
-def get_detection_performance(db: Session, tenant_bank_id: str) -> dict[str, Any]:
+def get_detection_performance(
+    db: Session, tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None,
+) -> dict[str, Any]:
     """Real detection-performance metrics -- deliberately NOT the
     "Detection Effectiveness %" / "False Positive Rate" the original
     prototype showed as static mock numbers. Those aren't computable at
@@ -308,20 +366,22 @@ def get_detection_performance(db: Session, tenant_bank_id: str) -> dict[str, Any
       reconciliation breaks -- a variance flagged before the source
       system's own official BREAK verdict caught up to it (see
       app/reconciliation/breaks.py's module docstring).
+
+    start_date/end_date (plain "YYYY-MM-DD") narrow every count below to
+    signals whose own natural timestamp falls in that range -- see
+    query_filters.py's module docstring for which column each source uses.
     """
-    total_transactions = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id).count()
+    total_transactions = _events_query(db, tenant_bank_id, start_date, end_date).count()
     resolved_filter = or_(CanonicalEvent.merchant_id.isnot(None), CanonicalEvent.individual_id.isnot(None))
-    covered_transactions = (
-        db.query(CanonicalEvent).filter(CanonicalEvent.tenant_bank_id == tenant_bank_id, resolved_filter).count()
-    )
+    covered_transactions = _events_query(db, tenant_bank_id, start_date, end_date).filter(resolved_filter).count()
 
     coverage_by_rail = []
     rail_types = [r for (r,) in db.query(CanonicalEvent.rail_type).filter_by(tenant_bank_id=tenant_bank_id).distinct().all()]
     for rail_type in sorted(rail_types):
-        rail_total = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, rail_type=rail_type).count()
+        rail_total = _events_query(db, tenant_bank_id, start_date, end_date).filter(CanonicalEvent.rail_type == rail_type).count()
         rail_covered = (
-            db.query(CanonicalEvent)
-            .filter(CanonicalEvent.tenant_bank_id == tenant_bank_id, CanonicalEvent.rail_type == rail_type, resolved_filter)
+            _events_query(db, tenant_bank_id, start_date, end_date)
+            .filter(CanonicalEvent.rail_type == rail_type, resolved_filter)
             .count()
         )
         coverage_by_rail.append({
@@ -330,16 +390,16 @@ def get_detection_performance(db: Session, tenant_bank_id: str) -> dict[str, Any
         })
 
     early_breaks = (
-        db.query(ReconciliationBreak)
-        .filter_by(tenant_bank_id=tenant_bank_id, detection_type="PROVISIONAL_VARIANCE")
+        _breaks_query(db, tenant_bank_id, start_date, end_date)
+        .filter(ReconciliationBreak.detection_type == "PROVISIONAL_VARIANCE")
         .all()
     )
     exposure_identified_early = sum(abs(b.amount) for b in early_breaks if b.amount is not None)
 
-    review = get_review_summary(db, tenant_bank_id)
+    review = get_review_summary(db, tenant_bank_id, start_date, end_date)
     reviewed_count = review["confirmed"] + review["dismissed"]
 
-    latencies = _detection_latencies(db, tenant_bank_id)
+    latencies = _detection_latencies(db, tenant_bank_id, start_date, end_date)
 
     return {
         "coverage_rate": (covered_transactions / total_transactions) if total_transactions else None,
@@ -355,15 +415,17 @@ def get_detection_performance(db: Session, tenant_bank_id: str) -> dict[str, Any
         "confirmed_count": review["confirmed"],
         "dismissed_count": review["dismissed"],
         "median_detection_time_seconds": statistics.median([lat for _, lat in latencies]) if latencies else None,
-        "detection_volume_by_category": _detection_volume_by_category(db, tenant_bank_id),
-        "detection_performance_by_rail": _detection_performance_by_rail(db, tenant_bank_id, latencies),
+        "detection_volume_by_category": _detection_volume_by_category(db, tenant_bank_id, start_date, end_date),
+        "detection_performance_by_rail": _detection_performance_by_rail(db, tenant_bank_id, latencies, start_date, end_date),
         "new_patterns_detected": _new_patterns_detected(db, tenant_bank_id),
-        "quality_trend": get_review_quality_trend(db, tenant_bank_id),
-        "pattern_mix": get_pattern_mix(db, tenant_bank_id),
+        "quality_trend": get_review_quality_trend(db, tenant_bank_id, start_date, end_date),
+        "pattern_mix": get_pattern_mix(db, tenant_bank_id, start_date, end_date),
     }
 
 
-def get_priority_distribution(db: Session, tenant_bank_id: str) -> dict[str, Any]:
+def get_priority_distribution(
+    db: Session, tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None,
+) -> dict[str, Any]:
     """Critical/High/Medium/Low counts across all three engines' findings
     -- a heuristic bucketing (no engine stores a "priority" field itself),
     documented here rather than left implicit:
@@ -380,7 +442,7 @@ def get_priority_distribution(db: Session, tenant_bank_id: str) -> dict[str, Any
     """
     counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
 
-    for (band,) in db.query(EntitySnapshot.anomaly_band).filter_by(tenant_bank_id=tenant_bank_id).all():
+    for (band,) in _snapshots_query(db, tenant_bank_id, start_date, end_date).with_entities(EntitySnapshot.anomaly_band).all():
         if band == "Critical":
             counts["critical"] += 1
         elif band == "High":
@@ -388,7 +450,7 @@ def get_priority_distribution(db: Session, tenant_bank_id: str) -> dict[str, Any
         elif band == "Low-Medium":
             counts["medium"] += 1
 
-    for issue in db.query(OperationalIssue).filter_by(tenant_bank_id=tenant_bank_id).all():
+    for issue in _issues_query(db, tenant_bank_id, start_date, end_date).all():
         if issue.issue_type == "DUPLICATE_PAYMENT":
             counts["critical"] += 1
         elif issue.severity_score is not None:
@@ -396,13 +458,15 @@ def get_priority_distribution(db: Session, tenant_bank_id: str) -> dict[str, Any
         else:
             counts["high"] += 1
 
-    for (detection_type,) in db.query(ReconciliationBreak.detection_type).filter_by(tenant_bank_id=tenant_bank_id).all():
+    for (detection_type,) in _breaks_query(db, tenant_bank_id, start_date, end_date).with_entities(ReconciliationBreak.detection_type).all():
         counts["critical" if detection_type == "CONFIRMED_BREAK" else "medium"] += 1
 
     return counts
 
 
-def get_detection_attention(db: Session, tenant_bank_id: str) -> dict[str, Any]:
+def get_detection_attention(
+    db: Session, tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None,
+) -> dict[str, Any]:
     """Flags rails whose success_rate sits below this tenant's own
     cross-rail average -- a relative comparison against this tenant's own
     data, not an arbitrary absolute threshold (no external benchmark
@@ -410,7 +474,7 @@ def get_detection_attention(db: Session, tenant_bank_id: str) -> dict[str, Any]:
     get_detection_performance()'s already-computed per-rail figures,
     same "reshape, don't recompute" rule as the rest of this module.
     """
-    performance = get_detection_performance(db, tenant_bank_id)
+    performance = get_detection_performance(db, tenant_bank_id, start_date, end_date)
     by_rail = performance["detection_performance_by_rail"]
     rates = [r["success_rate"] for r in by_rail if r["success_rate"] is not None]
     if not rates:

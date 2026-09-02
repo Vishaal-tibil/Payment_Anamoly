@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from ..anomaly.categories import FUNNEL_ACCOUNT_THRESHOLD
 from ..anomaly.models import BeneficiarySnapshot, EntitySnapshot
 from ..operations.models import OperationalIssue
+from ..query_filters import parse_date_bound
 from ..reconciliation.models import ReconciliationBreak
 from .models import CONFIRMED, DISMISSED, PENDING, STATUSES, AnalystReview
 
@@ -69,32 +70,64 @@ def set_review(
     return row
 
 
-def _claim_count(db: Session, tenant_bank_id: str) -> dict[str, int]:
+def _claim_count(
+    db: Session, tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None,
+) -> dict[str, int]:
+    start_dt, end_dt = parse_date_bound(start_date), parse_date_bound(end_date, end_of_day=True)
+
+    def _detected_at_col(model: type):
+        return model.detected_at
+
     counts = {}
     for signal_type, model in _CLAIM_MODELS.items():
-        counts[signal_type] = db.query(model).filter_by(tenant_bank_id=tenant_bank_id).count()
-    counts["fraud_anomaly"] = (
-        db.query(EntitySnapshot)
-        .filter(EntitySnapshot.tenant_bank_id == tenant_bank_id, EntitySnapshot.anomaly_band.in_(_MATERIAL_ANOMALY_BANDS))
-        .count()
+        query = db.query(model).filter_by(tenant_bank_id=tenant_bank_id)
+        if start_dt:
+            query = query.filter(_detected_at_col(model) >= start_dt)
+        if end_dt:
+            query = query.filter(_detected_at_col(model) <= end_dt)
+        counts[signal_type] = query.count()
+
+    fraud_query = db.query(EntitySnapshot).filter(
+        EntitySnapshot.tenant_bank_id == tenant_bank_id, EntitySnapshot.anomaly_band.in_(_MATERIAL_ANOMALY_BANDS),
     )
-    counts["funnel_account"] = (
-        db.query(BeneficiarySnapshot)
-        .filter(BeneficiarySnapshot.tenant_bank_id == tenant_bank_id, BeneficiarySnapshot.funnel_drift_score >= FUNNEL_ACCOUNT_THRESHOLD)
-        .count()
+    if start_dt:
+        fraud_query = fraud_query.filter(EntitySnapshot.window_end >= start_dt)
+    if end_dt:
+        fraud_query = fraud_query.filter(EntitySnapshot.window_end <= end_dt)
+    counts["fraud_anomaly"] = fraud_query.count()
+
+    funnel_query = db.query(BeneficiarySnapshot).filter(
+        BeneficiarySnapshot.tenant_bank_id == tenant_bank_id, BeneficiarySnapshot.funnel_drift_score >= FUNNEL_ACCOUNT_THRESHOLD,
     )
+    if start_dt:
+        funnel_query = funnel_query.filter(BeneficiarySnapshot.window_end >= start_dt)
+    if end_dt:
+        funnel_query = funnel_query.filter(BeneficiarySnapshot.window_end <= end_dt)
+    counts["funnel_account"] = funnel_query.count()
     return counts
 
 
-def get_review_summary(db: Session, tenant_bank_id: str) -> dict[str, Any]:
+def get_review_summary(
+    db: Session, tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None,
+) -> dict[str, Any]:
     """Tenant-wide review completion, the number the senior view leads
     with: how much of what's been detected has an analyst actually
     looked at, broken down by outcome and by which engine found it.
+
+    start_date/end_date narrow both the claim totals (each engine's own
+    detected_at/window_end) and which review actions count (reviewed_at)
+    -- see query_filters.py's module docstring.
     """
-    total_claims_by_type = _claim_count(db, tenant_bank_id)
+    total_claims_by_type = _claim_count(db, tenant_bank_id, start_date, end_date)
     total_claims = sum(total_claims_by_type.values())
 
-    reviews = db.query(AnalystReview).filter_by(tenant_bank_id=tenant_bank_id).all()
+    start_dt, end_dt = parse_date_bound(start_date), parse_date_bound(end_date, end_of_day=True)
+    reviews_query = db.query(AnalystReview).filter_by(tenant_bank_id=tenant_bank_id)
+    if start_dt:
+        reviews_query = reviews_query.filter(AnalystReview.reviewed_at >= start_dt)
+    if end_dt:
+        reviews_query = reviews_query.filter(AnalystReview.reviewed_at <= end_dt)
+    reviews = reviews_query.all()
     confirmed = sum(1 for r in reviews if r.status == CONFIRMED)
     dismissed = sum(1 for r in reviews if r.status == DISMISSED)
     reviewed = confirmed + dismissed
@@ -121,7 +154,9 @@ def get_review_summary(db: Session, tenant_bank_id: str) -> dict[str, Any]:
     }
 
 
-def get_review_quality_trend(db: Session, tenant_bank_id: str) -> list[dict[str, Any]]:
+def get_review_quality_trend(
+    db: Session, tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None,
+) -> list[dict[str, Any]]:
     """Real cumulative confirmation/false-positive rate, one point per
     real review action, in the order analysts actually reviewed_at them --
     not a fabricated smooth trend line. Reconstructed entirely from real
@@ -134,16 +169,17 @@ def get_review_quality_trend(db: Session, tenant_bank_id: str) -> list[dict[str,
     analyst confirms or dismisses a claim, same "grows via the feedback
     loop" shape as get_review_summary()'s confirmation_rate.
     """
-    reviews = (
-        db.query(AnalystReview)
-        .filter(
-            AnalystReview.tenant_bank_id == tenant_bank_id,
-            AnalystReview.status.in_((CONFIRMED, DISMISSED)),
-            AnalystReview.reviewed_at.isnot(None),
-        )
-        .order_by(AnalystReview.reviewed_at.asc())
-        .all()
+    start_dt, end_dt = parse_date_bound(start_date), parse_date_bound(end_date, end_of_day=True)
+    query = db.query(AnalystReview).filter(
+        AnalystReview.tenant_bank_id == tenant_bank_id,
+        AnalystReview.status.in_((CONFIRMED, DISMISSED)),
+        AnalystReview.reviewed_at.isnot(None),
     )
+    if start_dt:
+        query = query.filter(AnalystReview.reviewed_at >= start_dt)
+    if end_dt:
+        query = query.filter(AnalystReview.reviewed_at <= end_dt)
+    reviews = query.order_by(AnalystReview.reviewed_at.asc()).all()
 
     points = []
     confirmed_so_far = 0

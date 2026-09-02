@@ -25,6 +25,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from ..query_filters import parse_date_bound
 from .models import BeneficiarySnapshot, EntitySnapshot
 
 _MATERIAL_ANOMALY_BANDS = ("High", "Critical")
@@ -98,7 +99,9 @@ def categories_for_snapshots(db: Session, tenant_bank_id: str, segment: str) -> 
     return result
 
 
-def get_pattern_mix(db: Session, tenant_bank_id: str) -> dict[str, Any]:
+def get_pattern_mix(
+    db: Session, tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None,
+) -> dict[str, Any]:
     """"Known Patterns" vs "Newly Discovered" -- every flagged entity/
     beneficiary across both fraud tables, split by whether it matches at
     least one of the platform's 4 named categories. A row with zero
@@ -107,20 +110,26 @@ def get_pattern_mix(db: Session, tenant_bank_id: str) -> dict[str, Any]:
     being a peer-relative outlier) -- "newly discovered" here means
     exactly that: flagged by the model, not attributable to a named
     pattern yet, not a fabricated novelty-detection signal.
+
+    start_date/end_date narrow to snapshots whose window_end falls in
+    that range -- see query_filters.py's module docstring.
     """
+    start_dt, end_dt = parse_date_bound(start_date), parse_date_bound(end_date, end_of_day=True)
     known = 0
     newly_discovered = 0
 
     for segment in ("MERCHANT", "INDIVIDUAL"):
         tags_by_id = categories_for_snapshots(db, tenant_bank_id, segment)
-        flagged_ids = {
-            row.id
-            for row in db.query(EntitySnapshot.id).filter(
-                EntitySnapshot.tenant_bank_id == tenant_bank_id,
-                EntitySnapshot.segment == segment,
-                EntitySnapshot.anomaly_band.in_(_MATERIAL_ANOMALY_BANDS),
-            ).all()
-        }
+        flagged_query = db.query(EntitySnapshot.id).filter(
+            EntitySnapshot.tenant_bank_id == tenant_bank_id,
+            EntitySnapshot.segment == segment,
+            EntitySnapshot.anomaly_band.in_(_MATERIAL_ANOMALY_BANDS),
+        )
+        if start_dt:
+            flagged_query = flagged_query.filter(EntitySnapshot.window_end >= start_dt)
+        if end_dt:
+            flagged_query = flagged_query.filter(EntitySnapshot.window_end <= end_dt)
+        flagged_ids = {row.id for row in flagged_query.all()}
         for snapshot_id in flagged_ids:
             if tags_by_id.get(snapshot_id):
                 known += 1
@@ -130,11 +139,14 @@ def get_pattern_mix(db: Session, tenant_bank_id: str) -> dict[str, Any]:
     # Funnel Account is always its own single tag by construction (see
     # main.py's _beneficiary_snapshot_summary) -- every funnel-flagged
     # beneficiary is "known" by definition, never "newly discovered".
-    funnel_count = (
-        db.query(BeneficiarySnapshot)
-        .filter(BeneficiarySnapshot.tenant_bank_id == tenant_bank_id, BeneficiarySnapshot.funnel_drift_score >= FUNNEL_ACCOUNT_THRESHOLD)
-        .count()
+    funnel_query = db.query(BeneficiarySnapshot).filter(
+        BeneficiarySnapshot.tenant_bank_id == tenant_bank_id, BeneficiarySnapshot.funnel_drift_score >= FUNNEL_ACCOUNT_THRESHOLD,
     )
+    if start_dt:
+        funnel_query = funnel_query.filter(BeneficiarySnapshot.window_end >= start_dt)
+    if end_dt:
+        funnel_query = funnel_query.filter(BeneficiarySnapshot.window_end <= end_dt)
+    funnel_count = funnel_query.count()
     known += funnel_count
 
     total = known + newly_discovered

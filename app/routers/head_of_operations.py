@@ -54,12 +54,18 @@ async def get_health_score(tenant_bank_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/health/history")
-async def get_health_history_endpoint(tenant_bank_id: str, limit: int = 90, db: Session = Depends(get_db)):
+async def get_health_history_endpoint(
+    tenant_bank_id: str,
+    limit: int = 90,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    db: Session = Depends(get_db),
+):
     """Real health-score history for this tenant -- see
     get_health_history()'s docstring for why this can honestly be a
     1-point list today and grow over real time, never backfilled.
     """
-    return {"points": get_health_history(db, tenant_bank_id, limit=limit)}
+    return {"points": get_health_history(db, tenant_bank_id, limit=limit, start_date=start_date, end_date=end_date)}
 
 
 # --- Analyst review workflow ---
@@ -117,8 +123,10 @@ async def get_review_status_endpoint(
 
 
 @router.get("/review/summary")
-async def get_review_summary_endpoint(tenant_bank_id: str, db: Session = Depends(get_db)):
-    return get_review_summary(db, tenant_bank_id)
+async def get_review_summary_endpoint(
+    tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None, db: Session = Depends(get_db),
+):
+    return get_review_summary(db, tenant_bank_id, start_date, end_date)
 
 
 @router.get("/dashboard/anomaly-detection-categories")

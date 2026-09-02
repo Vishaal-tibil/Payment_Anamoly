@@ -40,6 +40,7 @@ from ..exposure import (
 from ..investigation.cases import compute_cases as compute_investigation_cases
 from ..investigation.cases import get_anomaly_type_counts
 from ..investigation.models import InvestigationCase, InvestigationCaseAlert
+from ..query_filters import parse_date_bound
 from ..review.service import get_review_quality_trend_daily
 from ..operations.models import OperationalIssue
 from ..reconciliation.models import ReconciliationBreak
@@ -88,6 +89,8 @@ async def list_snapshots(
     party_id: str | None = None,
     segment: str | None = None,
     split: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -99,6 +102,11 @@ async def list_snapshots(
         base_query = base_query.filter(EntitySnapshot.segment == segment.upper())
     if split:
         base_query = base_query.filter(EntitySnapshot.split == split.lower())
+    start_dt, end_dt = parse_date_bound(start_date), parse_date_bound(end_date, end_of_day=True)
+    if start_dt:
+        base_query = base_query.filter(EntitySnapshot.window_end >= start_dt)
+    if end_dt:
+        base_query = base_query.filter(EntitySnapshot.window_end <= end_dt)
     total = base_query.count()
     rows = (
         base_query.order_by(EntitySnapshot.party_id, EntitySnapshot.window_end)
@@ -160,6 +168,8 @@ def _beneficiary_snapshot_summary(s: BeneficiarySnapshot) -> dict:
 async def list_beneficiary_snapshots(
     tenant_bank_id: str,
     beneficiary_key: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -167,6 +177,11 @@ async def list_beneficiary_snapshots(
     base_query = db.query(BeneficiarySnapshot).filter(BeneficiarySnapshot.tenant_bank_id == tenant_bank_id)
     if beneficiary_key:
         base_query = base_query.filter(BeneficiarySnapshot.beneficiary_key == beneficiary_key)
+    start_dt, end_dt = parse_date_bound(start_date), parse_date_bound(end_date, end_of_day=True)
+    if start_dt:
+        base_query = base_query.filter(BeneficiarySnapshot.window_end >= start_dt)
+    if end_dt:
+        base_query = base_query.filter(BeneficiarySnapshot.window_end <= end_dt)
     total = base_query.count()
     rows = (
         base_query.order_by(BeneficiarySnapshot.beneficiary_key, BeneficiarySnapshot.window_start)
@@ -283,67 +298,81 @@ async def get_reconciliation_break(break_id: int, db: Session = Depends(get_db))
 
 
 @router.get("/dashboard/overview")
-async def dashboard_overview(tenant_bank_id: str, db: Session = Depends(get_db)):
-    return get_overview(db, tenant_bank_id)
+async def dashboard_overview(
+    tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None, db: Session = Depends(get_db),
+):
+    return get_overview(db, tenant_bank_id, start_date, end_date)
 
 
 @router.get("/dashboard/rails")
-async def dashboard_rails(tenant_bank_id: str, db: Session = Depends(get_db)):
-    return get_rail_stats(db, tenant_bank_id)
+async def dashboard_rails(
+    tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None, db: Session = Depends(get_db),
+):
+    return get_rail_stats(db, tenant_bank_id, start_date, end_date)
 
 
 @router.get("/dashboard/detection-performance")
-async def dashboard_detection_performance(tenant_bank_id: str, db: Session = Depends(get_db)):
+async def dashboard_detection_performance(
+    tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None, db: Session = Depends(get_db),
+):
     """Real detection-performance metrics -- see get_detection_performance's
     docstring for why confirmation/false-positive rate are grounded in the
     analyst review workflow (real, but grows more meaningful as review
     activity accumulates) while coverage and exposure-identified-early are
     fully real right now.
     """
-    return get_detection_performance(db, tenant_bank_id)
+    return get_detection_performance(db, tenant_bank_id, start_date, end_date)
 
 
 @router.get("/dashboard/exposure")
-async def dashboard_exposure(tenant_bank_id: str, db: Session = Depends(get_db)):
+async def dashboard_exposure(
+    tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None, db: Session = Depends(get_db),
+):
     """Real-dollar exposure views -- see app/exposure.py for exactly what
     "exposure" and "mitigated" mean here and why. Combined into one call
     since the Overview and Anomalies pages each read a subset of the same
     underlying real claims (see app/exposure.py's _all_claims()).
     """
     return {
-        "by_domain": get_exposure_by_domain(db, tenant_bank_id),
-        "trend": get_exposure_trend(db, tenant_bank_id),
-        "mitigation": get_mitigation_progress(db, tenant_bank_id),
-        "mitigation_by_domain": get_mitigation_progress_by_domain(db, tenant_bank_id),
-        "payment_value_by_rail": get_payment_value_by_rail(db, tenant_bank_id),
-        "normalcy": get_payment_normalcy(db, tenant_bank_id),
+        "by_domain": get_exposure_by_domain(db, tenant_bank_id, start_date, end_date),
+        "trend": get_exposure_trend(db, tenant_bank_id, start_date, end_date),
+        "mitigation": get_mitigation_progress(db, tenant_bank_id, start_date, end_date),
+        "mitigation_by_domain": get_mitigation_progress_by_domain(db, tenant_bank_id, start_date, end_date),
+        "payment_value_by_rail": get_payment_value_by_rail(db, tenant_bank_id, start_date, end_date),
+        "normalcy": get_payment_normalcy(db, tenant_bank_id, start_date, end_date),
     }
 
 
 @router.get("/dashboard/exposure-by-rail")
-async def dashboard_exposure_by_rail(tenant_bank_id: str, db: Session = Depends(get_db)):
+async def dashboard_exposure_by_rail(
+    tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None, db: Session = Depends(get_db),
+):
     """Real-dollar exposure broken down by rail instead of by domain --
     see get_exposure_by_rail()'s docstring for why Fraud/Anomaly claims
     are excluded (no single rail to attribute them to).
     """
-    return get_exposure_by_rail(db, tenant_bank_id)
+    return get_exposure_by_rail(db, tenant_bank_id, start_date, end_date)
 
 
 @router.get("/dashboard/priority-distribution")
-async def dashboard_priority_distribution(tenant_bank_id: str, db: Session = Depends(get_db)):
+async def dashboard_priority_distribution(
+    tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None, db: Session = Depends(get_db),
+):
     """Critical/High/Medium/Low counts across all three engines -- see
     get_priority_distribution()'s docstring for the exact bucketing rule
     (a heuristic, since no engine stores a "priority" field itself).
     """
-    return get_priority_distribution(db, tenant_bank_id)
+    return get_priority_distribution(db, tenant_bank_id, start_date, end_date)
 
 
 @router.get("/dashboard/anomaly-heatmap")
-async def dashboard_anomaly_heatmap(tenant_bank_id: str, db: Session = Depends(get_db)):
+async def dashboard_anomaly_heatmap(
+    tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None, db: Session = Depends(get_db),
+):
     """Rail x category cross-tab -- serves both Overview's heatmap and
     Payment Rails' "Anomalies by Rail" breakdown, same underlying data.
     """
-    return get_anomaly_heatmap(db, tenant_bank_id)
+    return get_anomaly_heatmap(db, tenant_bank_id, start_date, end_date)
 
 
 @router.get("/dashboard/quality-trend-daily")
@@ -357,11 +386,13 @@ async def dashboard_quality_trend_daily(tenant_bank_id: str, days: int = 7, db: 
 
 
 @router.get("/dashboard/detection-attention")
-async def dashboard_detection_attention(tenant_bank_id: str, db: Session = Depends(get_db)):
+async def dashboard_detection_attention(
+    tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None, db: Session = Depends(get_db),
+):
     """Rails whose success_rate sits below this tenant's own cross-rail
     average -- see get_detection_attention()'s docstring.
     """
-    return get_detection_attention(db, tenant_bank_id)
+    return get_detection_attention(db, tenant_bank_id, start_date, end_date)
 
 
 _FACT_BUILDERS = {

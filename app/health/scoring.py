@@ -42,6 +42,7 @@ from sqlalchemy.orm import Session
 from ..anomaly.models import EntitySnapshot
 from ..models import CanonicalEvent
 from ..operations.models import OperationalIssue
+from ..query_filters import parse_date_bound
 from ..reconciliation.models import ReconciliationBreak
 from .models import PaymentHealthScore, PaymentHealthScoreHistory
 
@@ -167,19 +168,25 @@ def compute_health_scores(db: Session, tenant_bank_id: str | None = None) -> dic
     }
 
 
-def get_health_history(db: Session, tenant_bank_id: str, limit: int = 90) -> list[dict[str, Any]]:
+def get_health_history(
+    db: Session,
+    tenant_bank_id: str,
+    limit: int = 90,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[dict[str, Any]]:
     """Real compute-run history for this tenant, oldest first -- however
     many points actually exist (often just 1, honestly, until
     POST /health/compute has run repeatedly over real time). Never
     backfilled with fabricated past points -- see PaymentHealthScoreHistory.
     """
-    rows = (
-        db.query(PaymentHealthScoreHistory)
-        .filter_by(tenant_bank_id=tenant_bank_id)
-        .order_by(PaymentHealthScoreHistory.computed_at.desc())
-        .limit(limit)
-        .all()
-    )
+    start_dt, end_dt = parse_date_bound(start_date), parse_date_bound(end_date, end_of_day=True)
+    query = db.query(PaymentHealthScoreHistory).filter_by(tenant_bank_id=tenant_bank_id)
+    if start_dt:
+        query = query.filter(PaymentHealthScoreHistory.computed_at >= start_dt)
+    if end_dt:
+        query = query.filter(PaymentHealthScoreHistory.computed_at <= end_dt)
+    rows = query.order_by(PaymentHealthScoreHistory.computed_at.desc()).limit(limit).all()
     rows.reverse()
     return [
         {"computed_at": row.computed_at, "health_score": row.health_score, "health_band": row.health_band}
