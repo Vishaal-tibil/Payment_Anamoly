@@ -10,700 +10,11 @@
     }
   },
   "paths": {
-    "/ingest/file": {
-      "post": {
-        "summary": "Ingest File",
-        "operationId": "ingest_file_ingest_file_post",
-        "requestBody": {
-          "content": {
-            "multipart/form-data": {
-              "schema": {
-                "$ref": "#/components/schemas/Body_ingest_file_ingest_file_post"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "File ingested (even if some rows failed -- check rows_failed/errors).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IngestFileResult"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Missing/invalid form fields."
-          },
-          "400": {
-            "description": "Wrong file extension (must be .csv, .xlsx, or .xls).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Ingestion (Steps 1-3)"
-        ]
-      }
-    },
-    "/resolve/parties": {
-      "post": {
-        "summary": "Resolve Parties Endpoint",
-        "operationId": "resolve_parties_endpoint_resolve_parties_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ResolvePartiesRequest",
-                "default": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Resolution run completed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ResolvePartiesResult"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Identity Resolution (Step 4)"
-        ]
-      }
-    },
-    "/merchants": {
-      "get": {
-        "summary": "List Merchants",
-        "operationId": "list_merchants_merchants_get",
-        "parameters": [
-          {
-            "name": "tenant_bank_id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Tenant Bank Id"
-            }
-          },
-          {
-            "name": "search",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Search"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 20,
-              "title": "Limit"
-            }
-          },
-          {
-            "name": "offset",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 0,
-              "title": "Offset"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Page of merchants for this tenant.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MerchantList"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Identity Resolution (Step 4)"
-        ]
-      }
-    },
-    "/merchants/{merchant_id}": {
-      "get": {
-        "summary": "Get Merchant",
-        "operationId": "get_merchant_merchants__merchant_id__get",
-        "parameters": [
-          {
-            "name": "merchant_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Merchant Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Merchant found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MerchantDetail"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "No merchant with this merchant_id.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Identity Resolution (Step 4)"
-        ]
-      }
-    },
-    "/individuals": {
-      "get": {
-        "summary": "List Individuals",
-        "operationId": "list_individuals_individuals_get",
-        "parameters": [
-          {
-            "name": "tenant_bank_id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Tenant Bank Id"
-            }
-          },
-          {
-            "name": "search",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Search"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 20,
-              "title": "Limit"
-            }
-          },
-          {
-            "name": "offset",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 0,
-              "title": "Offset"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Page of individuals for this tenant.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IndividualList"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Identity Resolution (Step 4)"
-        ]
-      }
-    },
-    "/individuals/{individual_id}": {
-      "get": {
-        "summary": "Get Individual",
-        "operationId": "get_individual_individuals__individual_id__get",
-        "parameters": [
-          {
-            "name": "individual_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Individual Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Individual found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IndividualDetail"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "No individual with this individual_id.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Identity Resolution (Step 4)"
-        ]
-      }
-    },
-    "/features/compute": {
-      "post": {
-        "summary": "Compute Features Endpoint",
-        "operationId": "compute_features_endpoint_features_compute_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ComputeFeaturesRequest",
-                "default": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Feature computation run completed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ComputeFeaturesResult"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Feature Store (Step 5, dashboard only)"
-        ]
-      }
-    },
-    "/features": {
-      "get": {
-        "summary": "List Features",
-        "operationId": "list_features_features_get",
-        "parameters": [
-          {
-            "name": "tenant_bank_id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Tenant Bank Id"
-            }
-          },
-          {
-            "name": "party_type",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Party Type"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 20,
-              "title": "Limit"
-            }
-          },
-          {
-            "name": "offset",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 0,
-              "title": "Offset"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Page of party feature rollups.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PartyFeaturesList"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Feature Store (Step 5, dashboard only)"
-        ]
-      }
-    },
-    "/features/{party_id}": {
-      "get": {
-        "summary": "Get Features",
-        "operationId": "get_features_features__party_id__get",
-        "parameters": [
-          {
-            "name": "party_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Party Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Features found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PartyFeatures"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "No features computed yet for this party_id -- run POST /features/compute first.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Feature Store (Step 5, dashboard only)"
-        ]
-      }
-    },
-    "/anomaly/snapshots/compute": {
-      "post": {
-        "summary": "Compute Snapshots Endpoint",
-        "operationId": "compute_snapshots_endpoint_anomaly_snapshots_compute_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ComputeSnapshotsRequest",
-                "default": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Snapshot computation run completed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ComputeSnapshotsResult"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Anomaly Detection - Behavioral Snapshots (Track A)"
-        ]
-      }
-    },
-    "/anomaly/isolation-forest/train": {
-      "post": {
-        "summary": "Train Isolation Forest Endpoint",
-        "operationId": "train_isolation_forest_endpoint_anomaly_isolation_forest_train_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/TrainIsolationForestRequest",
-                "default": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Training run completed for both segments.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IsolationForestTrainResult"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Anomaly Detection - Isolation Forest (Track B)"
-        ]
-      }
-    },
-    "/anomaly/clustering/compute": {
-      "post": {
-        "summary": "Cluster And Score Endpoint",
-        "operationId": "cluster_and_score_endpoint_anomaly_clustering_compute_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ClusterAndScoreRequest",
-                "default": {
-                  "include_structuring": false
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Clustering run completed for both segments.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ClusterAndScoreResult"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Anomaly Detection - HDBSCAN Clustering (Track D)"
-        ]
-      }
-    },
-    "/anomaly/final-score/compute": {
-      "post": {
-        "summary": "Compute Final Score Endpoint",
-        "operationId": "compute_final_score_endpoint_anomaly_final_score_compute_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ComputeFinalScoreRequest",
-                "default": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Final aggregation run completed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ComputeFinalScoreResult"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "One or more targeted rows are missing isolation_forest_score -- run POST /anomaly/isolation-forest/train first.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Anomaly Detection - Final Aggregation (Section 8)"
-        ]
-      }
-    },
     "/anomaly/snapshots": {
       "get": {
+        "tags": [
+          "Anomaly Detection - Behavioral Snapshots (Track A)"
+        ],
         "summary": "List Snapshots",
         "operationId": "list_snapshots_anomaly_snapshots_get",
         "parameters": [
@@ -840,14 +151,14 @@
               }
             }
           }
-        },
-        "tags": [
-          "Anomaly Detection - Behavioral Snapshots (Track A)"
-        ]
+        }
       }
     },
     "/anomaly/snapshots/{snapshot_id}": {
       "get": {
+        "tags": [
+          "Analyst"
+        ],
         "summary": "Get Snapshot",
         "operationId": "get_snapshot_anomaly_snapshots__snapshot_id__get",
         "parameters": [
@@ -892,131 +203,11 @@
         }
       }
     },
-    "/anomaly/timeseries/compute": {
-      "post": {
-        "summary": "Score Drift Endpoint",
-        "operationId": "score_drift_endpoint_anomaly_timeseries_compute_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ScoreDriftRequest",
-                "default": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Time-series drift scoring run completed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ScoreDriftResult"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Anomaly Detection - Time-Series Drift (Track C)"
-        ]
-      }
-    },
-    "/anomaly/beneficiary-snapshots/compute": {
-      "post": {
-        "summary": "Compute Beneficiary Snapshots Endpoint",
-        "operationId": "compute_beneficiary_snapshots_endpoint_anomaly_beneficiary_snapshots_compute_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ComputeBeneficiarySnapshotsRequest",
-                "default": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Beneficiary snapshot computation run completed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ComputeBeneficiarySnapshotsResult"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Anomaly Detection - Funnel Account (Track A input + Track C)"
-        ]
-      }
-    },
-    "/anomaly/funnel/compute": {
-      "post": {
-        "summary": "Score Funnel Drift Endpoint",
-        "operationId": "score_funnel_drift_endpoint_anomaly_funnel_compute_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ScoreFunnelDriftRequest",
-                "default": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Funnel drift scoring run completed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ScoreFunnelDriftResult"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Anomaly Detection - Funnel Account (Track A input + Track C)"
-        ]
-      }
-    },
     "/anomaly/beneficiary-snapshots": {
       "get": {
+        "tags": [
+          "Anomaly Detection - Funnel Account (Track A input + Track C)"
+        ],
         "summary": "List Beneficiary Snapshots",
         "operationId": "list_beneficiary_snapshots_anomaly_beneficiary_snapshots_get",
         "parameters": [
@@ -1121,14 +312,14 @@
               }
             }
           }
-        },
-        "tags": [
-          "Anomaly Detection - Funnel Account (Track A input + Track C)"
-        ]
+        }
       }
     },
     "/anomaly/beneficiary-snapshots/{snapshot_id}": {
       "get": {
+        "tags": [
+          "Analyst"
+        ],
         "summary": "Get Beneficiary Snapshot",
         "operationId": "get_beneficiary_snapshot_anomaly_beneficiary_snapshots__snapshot_id__get",
         "parameters": [
@@ -1173,213 +364,11 @@
         }
       }
     },
-    "/operations/duplicate-payments/compute": {
-      "post": {
-        "summary": "Detect Duplicate Payments Endpoint",
-        "operationId": "detect_duplicate_payments_endpoint_operations_duplicate_payments_compute_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DetectDuplicatePaymentsRequest",
-                "default": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Duplicate-payment detection run completed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DetectDuplicatePaymentsResult"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Operational Issues - Duplicate Payment (Step 6b)"
-        ]
-      }
-    },
-    "/operations/format-rejections/compute": {
-      "post": {
-        "summary": "List Format Rejections Endpoint",
-        "operationId": "list_format_rejections_endpoint_operations_format_rejections_compute_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ListFormatRejectionsRequest",
-                "default": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Format-rejection listing run completed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListFormatRejectionsResult"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Operational Issues - Formatting Rejection (Step 6b)"
-        ]
-      }
-    },
-    "/operations/format-rejections/spikes/compute": {
-      "post": {
-        "summary": "Score Format Rejection Drift Endpoint",
-        "operationId": "score_format_rejection_drift_endpoint_operations_format_rejections_spikes_compute_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ScoreFormatRejectionDriftRequest",
-                "default": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Format-rejection rate drift scoring run completed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ScoreFormatRejectionDriftResult"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Operational Issues - Formatting Rejection (Step 6b)"
-        ]
-      }
-    },
-    "/operations/batches/compute": {
-      "post": {
-        "summary": "Detect Unsettled Batches Endpoint",
-        "operationId": "detect_unsettled_batches_endpoint_operations_batches_compute_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DetectUnsettledBatchesRequest",
-                "default": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Unsettled-batch detection run completed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DetectUnsettledBatchesResult"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Operational Issues - Batch Never Settles (Step 6b)"
-        ]
-      }
-    },
-    "/operations/timeout/compute": {
-      "post": {
-        "summary": "Detect Timeout Spikes Endpoint",
-        "operationId": "detect_timeout_spikes_endpoint_operations_timeout_compute_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DetectTimeoutSpikesRequest",
-                "default": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Timeout-spike detection run completed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DetectTimeoutSpikesResult"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Operational Issues - Network/Processor Timeout (Step 6b)"
-        ]
-      }
-    },
     "/operations/issues": {
       "get": {
+        "tags": [
+          "Operational Issues - Issue Feed (Step 6b)"
+        ],
         "summary": "List Operational Issues",
         "operationId": "list_operational_issues_operations_issues_get",
         "parameters": [
@@ -1466,14 +455,14 @@
               }
             }
           }
-        },
-        "tags": [
-          "Operational Issues - Issue Feed (Step 6b)"
-        ]
+        }
       }
     },
     "/operations/issues/{issue_id}": {
       "get": {
+        "tags": [
+          "Analyst"
+        ],
         "summary": "Get Operational Issue",
         "operationId": "get_operational_issue_operations_issues__issue_id__get",
         "parameters": [
@@ -1518,49 +507,11 @@
         }
       }
     },
-    "/reconciliation/breaks/compute": {
-      "post": {
-        "summary": "Detect Reconciliation Breaks Endpoint",
-        "operationId": "detect_reconciliation_breaks_endpoint_reconciliation_breaks_compute_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DetectReconciliationBreaksRequest",
-                "default": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Reconciliation break detection run completed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DetectReconciliationBreaksResult"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Reconciliation (Step 6c)"
-        ]
-      }
-    },
     "/reconciliation/breaks": {
       "get": {
+        "tags": [
+          "Reconciliation (Step 6c)"
+        ],
         "summary": "List Reconciliation Breaks",
         "operationId": "list_reconciliation_breaks_reconciliation_breaks_get",
         "parameters": [
@@ -1647,14 +598,14 @@
               }
             }
           }
-        },
-        "tags": [
-          "Reconciliation (Step 6c)"
-        ]
+        }
       }
     },
     "/reconciliation/breaks/{break_id}": {
       "get": {
+        "tags": [
+          "Analyst"
+        ],
         "summary": "Get Reconciliation Break",
         "operationId": "get_reconciliation_break_reconciliation_breaks__break_id__get",
         "parameters": [
@@ -1699,257 +650,11 @@
         }
       }
     },
-    "/health/compute": {
-      "post": {
-        "summary": "Compute Health Endpoint",
-        "operationId": "compute_health_endpoint_health_compute_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ComputeHealthRequest",
-                "default": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/health/scores": {
-      "get": {
-        "summary": "Get Health Score",
-        "operationId": "get_health_score_health_scores_get",
-        "parameters": [
-          {
-            "name": "tenant_bank_id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Tenant Bank Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/health/history": {
-      "get": {
-        "summary": "Get Health History Endpoint",
-        "description": "Real health-score history for this tenant -- see\nget_health_history()'s docstring for why this can honestly be a\n1-point list today and grow over real time, never backfilled.",
-        "operationId": "get_health_history_endpoint_health_history_get",
-        "parameters": [
-          {
-            "name": "tenant_bank_id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Tenant Bank Id"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 90,
-              "title": "Limit"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/review/set": {
-      "post": {
-        "summary": "Set Review Endpoint",
-        "operationId": "set_review_endpoint_review_set_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SetReviewRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/review/status": {
-      "get": {
-        "summary": "Get Review Status Endpoint",
-        "operationId": "get_review_status_endpoint_review_status_get",
-        "parameters": [
-          {
-            "name": "signal_type",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Signal Type"
-            }
-          },
-          {
-            "name": "signal_id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "title": "Signal Id"
-            }
-          },
-          {
-            "name": "tenant_bank_id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Tenant Bank Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/review/summary": {
-      "get": {
-        "summary": "Get Review Summary Endpoint",
-        "operationId": "get_review_summary_endpoint_review_summary_get",
-        "parameters": [
-          {
-            "name": "tenant_bank_id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Tenant Bank Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/dashboard/overview": {
       "get": {
+        "tags": [
+          "Dashboard (frontend)"
+        ],
         "summary": "Dashboard Overview",
         "operationId": "dashboard_overview_dashboard_overview_get",
         "parameters": [
@@ -2018,14 +723,14 @@
               }
             }
           }
-        },
-        "tags": [
-          "Dashboard (frontend)"
-        ]
+        }
       }
     },
     "/dashboard/rails": {
       "get": {
+        "tags": [
+          "Dashboard (frontend)"
+        ],
         "summary": "Dashboard Rails",
         "operationId": "dashboard_rails_dashboard_rails_get",
         "parameters": [
@@ -2094,35 +799,14 @@
               }
             }
           }
-        },
-        "tags": [
-          "Dashboard (frontend)"
-        ]
-      }
-    },
-    "/dashboard/anomaly-detection-categories": {
-      "get": {
-        "summary": "Dashboard Anomaly Detection Categories",
-        "operationId": "dashboard_anomaly_detection_categories_dashboard_anomaly_detection_categories_get",
-        "responses": {
-          "200": {
-            "description": "Static category tree describing what's detected and how.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AnomalyDetectionCategories"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Dashboard (frontend)"
-        ]
+        }
       }
     },
     "/dashboard/detection-performance": {
       "get": {
+        "tags": [
+          "Analyst"
+        ],
         "summary": "Dashboard Detection Performance",
         "description": "Real detection-performance metrics -- see get_detection_performance's\ndocstring for why confirmation/false-positive rate are grounded in the\nanalyst review workflow (real, but grows more meaningful as review\nactivity accumulates) while coverage and exposure-identified-early are\nfully real right now. start_date/end_date scope coverage and\nexposure-identified-early only -- see that docstring for why the rest\nstays unfiltered.",
         "operationId": "dashboard_detection_performance_dashboard_detection_performance_get",
@@ -2193,46 +877,11 @@
         }
       }
     },
-    "/dashboard/senior-overview": {
-      "get": {
-        "summary": "Dashboard Senior Overview",
-        "description": "The executive rollup: one health score + review completion +\nper-engine finding totals. No per-item detail -- that's the analyst\nview's job (GET /operations/issues, /reconciliation/breaks,\n/anomaly/snapshots, each with its own review status).",
-        "operationId": "dashboard_senior_overview_dashboard_senior_overview_get",
-        "parameters": [
-          {
-            "name": "tenant_bank_id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Tenant Bank Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/dashboard/exposure": {
       "get": {
+        "tags": [
+          "Analyst"
+        ],
         "summary": "Dashboard Exposure",
         "description": "Real-dollar exposure views -- see app/exposure.py for exactly what\n\"exposure\" and \"mitigated\" mean here and why. Combined into one call\nsince the Overview and Anomalies pages each read a subset of the same\nunderlying real claims (see app/exposure.py's _all_claims()).\nstart_date/end_date (optional \"YYYY-MM-DD\") scope every figure here to\nthat real transaction window.",
         "operationId": "dashboard_exposure_dashboard_exposure_get",
@@ -2303,8 +952,328 @@
         }
       }
     },
+    "/dashboard/exposure-by-rail": {
+      "get": {
+        "tags": [
+          "Analyst"
+        ],
+        "summary": "Dashboard Exposure By Rail",
+        "description": "Real-dollar exposure broken down by rail instead of by domain --\nsee get_exposure_by_rail()'s docstring for why Fraud/Anomaly claims\nare excluded (no single rail to attribute them to).",
+        "operationId": "dashboard_exposure_by_rail_dashboard_exposure_by_rail_get",
+        "parameters": [
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          },
+          {
+            "name": "start_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "name": "end_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dashboard/priority-distribution": {
+      "get": {
+        "tags": [
+          "Analyst"
+        ],
+        "summary": "Dashboard Priority Distribution",
+        "description": "Critical/High/Medium/Low counts across all three engines -- see\nget_priority_distribution()'s docstring: sourced from the same real\nper-item severity_score/priority_level app/priority.py computes for\nGET /operations/issues and /reconciliation/breaks, never a separate\nheuristic.",
+        "operationId": "dashboard_priority_distribution_dashboard_priority_distribution_get",
+        "parameters": [
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          },
+          {
+            "name": "start_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "name": "end_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dashboard/anomaly-heatmap": {
+      "get": {
+        "tags": [
+          "Analyst"
+        ],
+        "summary": "Dashboard Anomaly Heatmap",
+        "description": "Rail x category cross-tab -- serves both Overview's heatmap and\nPayment Rails' \"Anomalies by Rail\" breakdown, same underlying data.",
+        "operationId": "dashboard_anomaly_heatmap_dashboard_anomaly_heatmap_get",
+        "parameters": [
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          },
+          {
+            "name": "start_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "name": "end_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dashboard/quality-trend-daily": {
+      "get": {
+        "tags": [
+          "Analyst"
+        ],
+        "summary": "Dashboard Quality Trend Daily",
+        "description": "Confirmed/dismissed counts per calendar day over this tenant's own\nrecent review activity -- see get_review_quality_trend_daily()'s\ndocstring for why \"recent\" is relative to the data's own timeline,\nnot wall-clock now().",
+        "operationId": "dashboard_quality_trend_daily_dashboard_quality_trend_daily_get",
+        "parameters": [
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 7,
+              "title": "Days"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dashboard/detection-attention": {
+      "get": {
+        "tags": [
+          "Analyst"
+        ],
+        "summary": "Dashboard Detection Attention",
+        "description": "Rails whose success_rate sits below this tenant's own cross-rail\naverage -- see get_detection_attention()'s docstring.",
+        "operationId": "dashboard_detection_attention_dashboard_detection_attention_get",
+        "parameters": [
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/agent/narrate": {
       "post": {
+        "tags": [
+          "Agent (Step 7, Mistral)"
+        ],
         "summary": "Narrate Endpoint",
         "operationId": "narrate_endpoint_agent_narrate_post",
         "requestBody": {
@@ -2378,14 +1347,14 @@
               }
             }
           }
-        },
-        "tags": [
-          "Agent (Step 7, Mistral)"
-        ]
+        }
       }
     },
     "/agent/narratives": {
       "get": {
+        "tags": [
+          "Agent (Step 7, Mistral)"
+        ],
         "summary": "List Narratives",
         "operationId": "list_narratives_agent_narratives_get",
         "parameters": [
@@ -2456,10 +1425,1652 @@
               }
             }
           }
-        },
+        }
+      }
+    },
+    "/investigation/cases/compute": {
+      "post": {
         "tags": [
-          "Agent (Step 7, Mistral)"
-        ]
+          "Analyst"
+        ],
+        "summary": "Compute Cases Endpoint",
+        "operationId": "compute_cases_endpoint_investigation_cases_compute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComputeCasesRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/investigation/anomaly-types": {
+      "get": {
+        "tags": [
+          "Analyst"
+        ],
+        "summary": "List Anomaly Type Counts",
+        "description": "Ranked real named types (\"Failure-rate spike,\" \"Batch never\nsettles,\" etc.) from InvestigationCaseAlert -- see\nget_anomaly_type_counts()'s docstring.",
+        "operationId": "list_anomaly_type_counts_investigation_anomaly_types_get",
+        "parameters": [
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/investigation/cases": {
+      "get": {
+        "tags": [
+          "Analyst"
+        ],
+        "summary": "List Investigation Cases",
+        "operationId": "list_investigation_cases_investigation_cases_get",
+        "parameters": [
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          },
+          {
+            "name": "priority_level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Priority Level"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/investigation/cases/{case_id}": {
+      "get": {
+        "tags": [
+          "Analyst"
+        ],
+        "summary": "Get Investigation Case",
+        "operationId": "get_investigation_case_investigation_cases__case_id__get",
+        "parameters": [
+          {
+            "name": "case_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Case Id"
+            }
+          },
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/investigation/cases/{case_id}/validate": {
+      "post": {
+        "tags": [
+          "Analyst"
+        ],
+        "summary": "Validate Investigation Case",
+        "operationId": "validate_investigation_case_investigation_cases__case_id__validate_post",
+        "parameters": [
+          {
+            "name": "case_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Case Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidateCaseRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/scores": {
+      "get": {
+        "tags": [
+          "Head of Operations"
+        ],
+        "summary": "Get Health Score",
+        "operationId": "get_health_score_health_scores_get",
+        "parameters": [
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/history": {
+      "get": {
+        "tags": [
+          "Head of Operations"
+        ],
+        "summary": "Get Health History Endpoint",
+        "description": "Real health-score history for this tenant -- see\nget_health_history()'s docstring for why this can honestly be a\n1-point list today and grow over real time, never backfilled.",
+        "operationId": "get_health_history_endpoint_health_history_get",
+        "parameters": [
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 90,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/review/set": {
+      "post": {
+        "tags": [
+          "Head of Operations"
+        ],
+        "summary": "Set Review Endpoint",
+        "operationId": "set_review_endpoint_review_set_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/review/status": {
+      "get": {
+        "tags": [
+          "Head of Operations"
+        ],
+        "summary": "Get Review Status Endpoint",
+        "operationId": "get_review_status_endpoint_review_status_get",
+        "parameters": [
+          {
+            "name": "signal_type",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Signal Type"
+            }
+          },
+          {
+            "name": "signal_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Signal Id"
+            }
+          },
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/review/summary": {
+      "get": {
+        "tags": [
+          "Head of Operations"
+        ],
+        "summary": "Get Review Summary Endpoint",
+        "operationId": "get_review_summary_endpoint_review_summary_get",
+        "parameters": [
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dashboard/anomaly-detection-categories": {
+      "get": {
+        "tags": [
+          "Dashboard (frontend)"
+        ],
+        "summary": "Dashboard Anomaly Detection Categories",
+        "operationId": "dashboard_anomaly_detection_categories_dashboard_anomaly_detection_categories_get",
+        "responses": {
+          "200": {
+            "description": "Static category tree describing what's detected and how.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnomalyDetectionCategories"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dashboard/senior-overview": {
+      "get": {
+        "tags": [
+          "Head of Operations"
+        ],
+        "summary": "Dashboard Senior Overview",
+        "description": "The executive rollup: one health score + review completion +\nper-engine finding totals. No per-item detail -- that's the analyst\nview's job (GET /operations/issues, /reconciliation/breaks,\n/anomaly/snapshots, each with its own review status).",
+        "operationId": "dashboard_senior_overview_dashboard_senior_overview_get",
+        "parameters": [
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ingest/file": {
+      "post": {
+        "tags": [
+          "Ingestion (Steps 1-3)"
+        ],
+        "summary": "Ingest File",
+        "operationId": "ingest_file_ingest_file_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_ingest_file_ingest_file_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "File ingested (even if some rows failed -- check rows_failed/errors).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestFileResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Missing/invalid form fields."
+          },
+          "400": {
+            "description": "Wrong file extension (must be .csv, .xlsx, or .xls).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/resolve/parties": {
+      "post": {
+        "tags": [
+          "Identity Resolution (Step 4)"
+        ],
+        "summary": "Resolve Parties Endpoint",
+        "operationId": "resolve_parties_endpoint_resolve_parties_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolvePartiesRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resolution run completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolvePartiesResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/merchants": {
+      "get": {
+        "tags": [
+          "Identity Resolution (Step 4)"
+        ],
+        "summary": "List Merchants",
+        "operationId": "list_merchants_merchants_get",
+        "parameters": [
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page of merchants for this tenant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MerchantList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/merchants/{merchant_id}": {
+      "get": {
+        "tags": [
+          "Identity Resolution (Step 4)"
+        ],
+        "summary": "Get Merchant",
+        "operationId": "get_merchant_merchants__merchant_id__get",
+        "parameters": [
+          {
+            "name": "merchant_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Merchant Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Merchant found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MerchantDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No merchant with this merchant_id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/individuals": {
+      "get": {
+        "tags": [
+          "Identity Resolution (Step 4)"
+        ],
+        "summary": "List Individuals",
+        "operationId": "list_individuals_individuals_get",
+        "parameters": [
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page of individuals for this tenant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IndividualList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/individuals/{individual_id}": {
+      "get": {
+        "tags": [
+          "Identity Resolution (Step 4)"
+        ],
+        "summary": "Get Individual",
+        "operationId": "get_individual_individuals__individual_id__get",
+        "parameters": [
+          {
+            "name": "individual_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Individual Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Individual found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IndividualDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No individual with this individual_id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/features/compute": {
+      "post": {
+        "tags": [
+          "Feature Store (Step 5, dashboard only)"
+        ],
+        "summary": "Compute Features Endpoint",
+        "operationId": "compute_features_endpoint_features_compute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComputeFeaturesRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Feature computation run completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputeFeaturesResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/features": {
+      "get": {
+        "tags": [
+          "Feature Store (Step 5, dashboard only)"
+        ],
+        "summary": "List Features",
+        "operationId": "list_features_features_get",
+        "parameters": [
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          },
+          {
+            "name": "party_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Party Type"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page of party feature rollups.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartyFeaturesList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/features/{party_id}": {
+      "get": {
+        "tags": [
+          "Feature Store (Step 5, dashboard only)"
+        ],
+        "summary": "Get Features",
+        "operationId": "get_features_features__party_id__get",
+        "parameters": [
+          {
+            "name": "party_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Party Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Features found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartyFeatures"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No features computed yet for this party_id -- run POST /features/compute first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/anomaly/snapshots/compute": {
+      "post": {
+        "tags": [
+          "Anomaly Detection - Behavioral Snapshots (Track A)"
+        ],
+        "summary": "Compute Snapshots Endpoint",
+        "operationId": "compute_snapshots_endpoint_anomaly_snapshots_compute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComputeSnapshotsRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Snapshot computation run completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputeSnapshotsResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/anomaly/isolation-forest/train": {
+      "post": {
+        "tags": [
+          "Anomaly Detection - Isolation Forest (Track B)"
+        ],
+        "summary": "Train Isolation Forest Endpoint",
+        "operationId": "train_isolation_forest_endpoint_anomaly_isolation_forest_train_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrainIsolationForestRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Training run completed for both segments.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IsolationForestTrainResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/anomaly/clustering/compute": {
+      "post": {
+        "tags": [
+          "Anomaly Detection - HDBSCAN Clustering (Track D)"
+        ],
+        "summary": "Cluster And Score Endpoint",
+        "operationId": "cluster_and_score_endpoint_anomaly_clustering_compute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClusterAndScoreRequest",
+                "default": {
+                  "include_structuring": false
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Clustering run completed for both segments.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClusterAndScoreResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/anomaly/final-score/compute": {
+      "post": {
+        "tags": [
+          "Anomaly Detection - Final Aggregation (Section 8)"
+        ],
+        "summary": "Compute Final Score Endpoint",
+        "operationId": "compute_final_score_endpoint_anomaly_final_score_compute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComputeFinalScoreRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Final aggregation run completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputeFinalScoreResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "One or more targeted rows are missing isolation_forest_score -- run POST /anomaly/isolation-forest/train first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/anomaly/timeseries/compute": {
+      "post": {
+        "tags": [
+          "Anomaly Detection - Time-Series Drift (Track C)"
+        ],
+        "summary": "Score Drift Endpoint",
+        "operationId": "score_drift_endpoint_anomaly_timeseries_compute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScoreDriftRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Time-series drift scoring run completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScoreDriftResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/anomaly/beneficiary-snapshots/compute": {
+      "post": {
+        "tags": [
+          "Anomaly Detection - Funnel Account (Track A input + Track C)"
+        ],
+        "summary": "Compute Beneficiary Snapshots Endpoint",
+        "operationId": "compute_beneficiary_snapshots_endpoint_anomaly_beneficiary_snapshots_compute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComputeBeneficiarySnapshotsRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Beneficiary snapshot computation run completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputeBeneficiarySnapshotsResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/anomaly/funnel/compute": {
+      "post": {
+        "tags": [
+          "Anomaly Detection - Funnel Account (Track A input + Track C)"
+        ],
+        "summary": "Score Funnel Drift Endpoint",
+        "operationId": "score_funnel_drift_endpoint_anomaly_funnel_compute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScoreFunnelDriftRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Funnel drift scoring run completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScoreFunnelDriftResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/operations/duplicate-payments/compute": {
+      "post": {
+        "tags": [
+          "Operational Issues - Duplicate Payment (Step 6b)"
+        ],
+        "summary": "Detect Duplicate Payments Endpoint",
+        "operationId": "detect_duplicate_payments_endpoint_operations_duplicate_payments_compute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DetectDuplicatePaymentsRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Duplicate-payment detection run completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DetectDuplicatePaymentsResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/operations/format-rejections/compute": {
+      "post": {
+        "tags": [
+          "Operational Issues - Formatting Rejection (Step 6b)"
+        ],
+        "summary": "List Format Rejections Endpoint",
+        "operationId": "list_format_rejections_endpoint_operations_format_rejections_compute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListFormatRejectionsRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Format-rejection listing run completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListFormatRejectionsResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/operations/format-rejections/spikes/compute": {
+      "post": {
+        "tags": [
+          "Operational Issues - Formatting Rejection (Step 6b)"
+        ],
+        "summary": "Score Format Rejection Drift Endpoint",
+        "operationId": "score_format_rejection_drift_endpoint_operations_format_rejections_spikes_compute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScoreFormatRejectionDriftRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Format-rejection rate drift scoring run completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScoreFormatRejectionDriftResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/operations/batches/compute": {
+      "post": {
+        "tags": [
+          "Operational Issues - Batch Never Settles (Step 6b)"
+        ],
+        "summary": "Detect Unsettled Batches Endpoint",
+        "operationId": "detect_unsettled_batches_endpoint_operations_batches_compute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DetectUnsettledBatchesRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Unsettled-batch detection run completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DetectUnsettledBatchesResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/operations/timeout/compute": {
+      "post": {
+        "tags": [
+          "Operational Issues - Network/Processor Timeout (Step 6b)"
+        ],
+        "summary": "Detect Timeout Spikes Endpoint",
+        "operationId": "detect_timeout_spikes_endpoint_operations_timeout_compute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DetectTimeoutSpikesRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Timeout-spike detection run completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DetectTimeoutSpikesResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/reconciliation/breaks/compute": {
+      "post": {
+        "tags": [
+          "Reconciliation (Step 6c)"
+        ],
+        "summary": "Detect Reconciliation Breaks Endpoint",
+        "operationId": "detect_reconciliation_breaks_endpoint_reconciliation_breaks_compute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DetectReconciliationBreaksRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Reconciliation break detection run completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DetectReconciliationBreaksResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/compute": {
+      "post": {
+        "tags": [
+          "Pipeline"
+        ],
+        "summary": "Compute Health Endpoint",
+        "operationId": "compute_health_endpoint_health_compute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComputeHealthRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     }
   },
@@ -2531,6 +3142,23 @@
         },
         "type": "object",
         "title": "ComputeBeneficiarySnapshotsRequest"
+      },
+      "ComputeCasesRequest": {
+        "properties": {
+          "tenant_bank_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant Bank Id"
+          }
+        },
+        "type": "object",
+        "title": "ComputeCasesRequest"
       },
       "ComputeFeaturesRequest": {
         "properties": {
@@ -2869,6 +3497,24 @@
         },
         "type": "object",
         "title": "TrainIsolationForestRequest"
+      },
+      "ValidateCaseRequest": {
+        "properties": {
+          "tenant_bank_id": {
+            "type": "string",
+            "title": "Tenant Bank Id"
+          },
+          "validation_status": {
+            "type": "string",
+            "title": "Validation Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tenant_bank_id",
+          "validation_status"
+        ],
+        "title": "ValidateCaseRequest"
       },
       "ValidationError": {
         "properties": {
