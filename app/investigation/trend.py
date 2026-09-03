@@ -60,7 +60,9 @@ def _week_start(dt: datetime) -> datetime:
     return monday.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
-def _issue_anchor_dates(db: Session, tenant_bank_id: str, issue_type: str, lookup: CanonicalEventLookup) -> list[datetime]:
+def _issue_anchor_dates(
+    db: Session, tenant_bank_id: str, issue_type: str, rail: str | None, lookup: CanonicalEventLookup,
+) -> list[datetime]:
     issues = db.query(OperationalIssue).filter_by(tenant_bank_id=tenant_bank_id, issue_type=issue_type).all()
 
     if issue_type in _PARTY_LEVEL_ISSUE_TYPES:
@@ -72,7 +74,17 @@ def _issue_anchor_dates(db: Session, tenant_bank_id: str, issue_type: str, looku
             event = lookup.first_by_transaction_id(issue.reference_id)
         else:
             event = lookup.first_by_batch_id(issue.reference_id)
-        ts = _parse_ts(event.transaction_occurred_at) if event else None
+        if event is None:
+            continue
+        # Was accepting `rail` as a param but never applying it -- every
+        # rail's chart for a TRANSACTION/BATCH-referenced category
+        # (DUPLICATE_PAYMENT, FORMAT_REJECTION, BATCH_NOT_SETTLED) showed
+        # the identical all-rails count, contradicting this function's
+        # own "(category, rail)" docstring. Confirmed live: 5 different
+        # cases (one per rail) all rendered byte-identical charts.
+        if rail and event.rail_type != rail:
+            continue
+        ts = _parse_ts(event.transaction_occurred_at)
         if ts:
             dates.append(ts)
     return dates
@@ -125,7 +137,7 @@ def category_weekly_trend(db: Session, tenant_bank_id: str, category: str, rail:
         if category in ("CONFIRMED_BREAK", "PROVISIONAL_VARIANCE"):
             anchors = _break_anchor_dates(db, tenant_bank_id, category, rail, lookup)
         else:
-            anchors = _issue_anchor_dates(db, tenant_bank_id, category, lookup)
+            anchors = _issue_anchor_dates(db, tenant_bank_id, category, rail, lookup)
 
     if not anchors:
         return None

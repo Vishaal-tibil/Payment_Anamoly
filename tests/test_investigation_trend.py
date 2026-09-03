@@ -103,3 +103,31 @@ def test_party_level_operational_issue_uses_window_end_not_detected_at(db_sessio
 
     assert trend is not None
     assert trend["weeks_observed"] == 3
+
+
+def test_transaction_referenced_issue_rail_filter_excludes_other_rails(db_session):
+    """Regression: _issue_anchor_dates (the DUPLICATE_PAYMENT/
+    FORMAT_REJECTION/BATCH_NOT_SETTLED path) used to accept `rail` but
+    never apply it -- every rail's chart for these categories rendered
+    the identical all-rails count. CHEQUE gets 3 real weeks; ACH gets
+    only 1 -- if the filter isn't applied, CHEQUE's own query would see
+    all 4 events and return weeks_observed=4 instead of 3.
+    """
+    _event(db_session, "TXN-1", "2026-06-01T10:00:00Z", rail_type="CHEQUE")
+    _event(db_session, "TXN-2", "2026-06-15T10:00:00Z", rail_type="CHEQUE")
+    _event(db_session, "TXN-3", "2026-06-22T10:00:00Z", rail_type="CHEQUE")
+    _event(db_session, "TXN-4", "2026-06-08T10:00:00Z", rail_type="ACH")
+    for txn_id in ("TXN-1", "TXN-2", "TXN-3", "TXN-4"):
+        db_session.add(OperationalIssue(
+            issue_type="DUPLICATE_PAYMENT", tenant_bank_id=_TENANT,
+            reference_type="TRANSACTION", reference_id=txn_id, detected_at=_SHARED_DETECTED_AT,
+        ))
+    db_session.commit()
+
+    cheque_trend = category_weekly_trend(db_session, _TENANT, "DUPLICATE_PAYMENT", "CHEQUE")
+    assert cheque_trend is not None
+    assert cheque_trend["weeks_observed"] == 3
+    assert sum(w["count"] for w in cheque_trend["counts_by_week"]) == 3  # not 4
+
+    # Only 1 real ACH week -> insufficient history on its own.
+    assert category_weekly_trend(db_session, _TENANT, "DUPLICATE_PAYMENT", "ACH") is None
