@@ -32,7 +32,12 @@ from sqlalchemy.orm import Session
 from .anomaly.models import EntitySnapshot
 from .models import CanonicalEvent
 from .operations.models import OperationalIssue
-from .query_filters import parse_date_bound, string_date_bounds
+from .query_filters import (
+    operational_issue_ids_in_date_range,
+    parse_date_bound,
+    reconciliation_break_ids_in_date_range,
+    string_date_bounds,
+)
 from .reconciliation.models import ReconciliationBreak
 from .review.models import CONFIRMED, DISMISSED
 from .review.service import get_review
@@ -75,22 +80,23 @@ def _parse_occurred_at(value: str | None) -> datetime | None:
 def _reconciliation_claims_source(
     db: Session, tenant_bank_id: str, start_date: str | None, end_date: str | None,
 ):
+    # Filtered by the break's real transaction date (via CanonicalEvent),
+    # NOT ReconciliationBreak.detected_at -- see query_filters.py's module
+    # docstring for why (every row shares one detected_at instant, the
+    # moment the pipeline ran, not spread across the data's own timeline).
     query = db.query(ReconciliationBreak).filter(ReconciliationBreak.tenant_bank_id == tenant_bank_id)
-    start_dt, end_dt = parse_date_bound(start_date), parse_date_bound(end_date, end_of_day=True)
-    if start_dt:
-        query = query.filter(ReconciliationBreak.detected_at >= start_dt)
-    if end_dt:
-        query = query.filter(ReconciliationBreak.detected_at <= end_dt)
+    matching_ids = reconciliation_break_ids_in_date_range(db, tenant_bank_id, start_date, end_date)
+    if matching_ids is not None:
+        query = query.filter(ReconciliationBreak.id.in_(matching_ids))
     return query.all()
 
 
 def _operational_issues_source(db: Session, tenant_bank_id: str, start_date: str | None, end_date: str | None):
+    # Same reasoning as _reconciliation_claims_source above.
     query = db.query(OperationalIssue).filter(OperationalIssue.tenant_bank_id == tenant_bank_id)
-    start_dt, end_dt = parse_date_bound(start_date), parse_date_bound(end_date, end_of_day=True)
-    if start_dt:
-        query = query.filter(OperationalIssue.detected_at >= start_dt)
-    if end_dt:
-        query = query.filter(OperationalIssue.detected_at <= end_dt)
+    matching_ids = operational_issue_ids_in_date_range(db, tenant_bank_id, start_date, end_date)
+    if matching_ids is not None:
+        query = query.filter(OperationalIssue.id.in_(matching_ids))
     return query
 
 
@@ -121,12 +127,12 @@ def _fraud_anomaly_claims(
 def _reconciliation_claims(
     db: Session, tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None,
 ) -> list[dict[str, Any]]:
+    # Filtered by the break's real transaction date, NOT detected_at --
+    # see query_filters.py's module docstring.
     query = db.query(ReconciliationBreak).filter(ReconciliationBreak.tenant_bank_id == tenant_bank_id)
-    start_dt, end_dt = parse_date_bound(start_date), parse_date_bound(end_date, end_of_day=True)
-    if start_dt:
-        query = query.filter(ReconciliationBreak.detected_at >= start_dt)
-    if end_dt:
-        query = query.filter(ReconciliationBreak.detected_at <= end_dt)
+    matching_ids = reconciliation_break_ids_in_date_range(db, tenant_bank_id, start_date, end_date)
+    if matching_ids is not None:
+        query = query.filter(ReconciliationBreak.id.in_(matching_ids))
     breaks = query.all()
     claims = []
     for brk in breaks:
@@ -149,15 +155,15 @@ def _reconciliation_claims(
 def _operational_claims(
     db: Session, tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None,
 ) -> list[dict[str, Any]]:
+    # Filtered by each issue's real transaction date, NOT detected_at --
+    # see query_filters.py's module docstring.
     query = db.query(OperationalIssue).filter(
         OperationalIssue.tenant_bank_id == tenant_bank_id,
         OperationalIssue.issue_type.in_(_TRANSACTION_LEVEL_ISSUE_TYPES + _BATCH_LEVEL_ISSUE_TYPES),
     )
-    start_dt, end_dt = parse_date_bound(start_date), parse_date_bound(end_date, end_of_day=True)
-    if start_dt:
-        query = query.filter(OperationalIssue.detected_at >= start_dt)
-    if end_dt:
-        query = query.filter(OperationalIssue.detected_at <= end_dt)
+    matching_ids = operational_issue_ids_in_date_range(db, tenant_bank_id, start_date, end_date)
+    if matching_ids is not None:
+        query = query.filter(OperationalIssue.id.in_(matching_ids))
     issues = query.all()
     claims = []
     for issue in issues:

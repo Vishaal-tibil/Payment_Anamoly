@@ -376,13 +376,20 @@ async def dashboard_anomaly_heatmap(
 
 
 @router.get("/dashboard/quality-trend-daily")
-async def dashboard_quality_trend_daily(tenant_bank_id: str, days: int = 7, db: Session = Depends(get_db)):
+async def dashboard_quality_trend_daily(
+    tenant_bank_id: str,
+    days: int = 7,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    db: Session = Depends(get_db),
+):
     """Confirmed/dismissed counts per calendar day over this tenant's own
     recent review activity -- see get_review_quality_trend_daily()'s
     docstring for why "recent" is relative to the data's own timeline,
-    not wall-clock now().
+    not wall-clock now(), and for how start_date/end_date override that
+    trailing-days window with an explicit range instead.
     """
-    return {"days": get_review_quality_trend_daily(db, tenant_bank_id, days=days)}
+    return {"days": get_review_quality_trend_daily(db, tenant_bank_id, days=days, start_date=start_date, end_date=end_date)}
 
 
 @router.get("/dashboard/detection-attention")
@@ -498,12 +505,14 @@ async def compute_cases_endpoint(
 
 
 @router.get("/investigation/anomaly-types")
-async def list_anomaly_type_counts(tenant_bank_id: str, db: Session = Depends(get_db)):
+async def list_anomaly_type_counts(
+    tenant_bank_id: str, start_date: str | None = None, end_date: str | None = None, db: Session = Depends(get_db),
+):
     """Ranked real named types ("Failure-rate spike," "Batch never
     settles," etc.) from InvestigationCaseAlert -- see
     get_anomaly_type_counts()'s docstring.
     """
-    return get_anomaly_type_counts(db, tenant_bank_id=tenant_bank_id)
+    return get_anomaly_type_counts(db, tenant_bank_id=tenant_bank_id, start_date=start_date, end_date=end_date)
 
 
 def _investigation_case_summary(case: InvestigationCase) -> dict:
@@ -543,9 +552,16 @@ async def list_investigation_cases(
     tenant_bank_id: str,
     limit: int = 50,
     offset: int = 0,
+    start_date: str | None = None,
+    end_date: str | None = None,
     db: Session = Depends(get_db),
 ):
     base_query = db.query(InvestigationCase).filter(InvestigationCase.tenant_bank_id == tenant_bank_id)
+    start_dt, end_dt = parse_date_bound(start_date), parse_date_bound(end_date, end_of_day=True)
+    if start_dt:
+        base_query = base_query.filter(InvestigationCase.opened_at >= start_dt)
+    if end_dt:
+        base_query = base_query.filter(InvestigationCase.opened_at <= end_dt)
     total = base_query.count()
     rows = (
         base_query.order_by(InvestigationCase.opened_at.desc())

@@ -11,7 +11,11 @@ from sqlalchemy.orm import Session
 from ..anomaly.categories import FUNNEL_ACCOUNT_THRESHOLD
 from ..anomaly.models import BeneficiarySnapshot, EntitySnapshot
 from ..operations.models import OperationalIssue
-from ..query_filters import parse_date_bound
+from ..query_filters import (
+    operational_issue_ids_in_date_range,
+    parse_date_bound,
+    reconciliation_break_ids_in_date_range,
+)
 from ..reconciliation.models import ReconciliationBreak
 from .models import CONFIRMED, DISMISSED, PENDING, STATUSES, AnalystReview
 
@@ -19,12 +23,6 @@ from .models import CONFIRMED, DISMISSED, PENDING, STATUSES, AnalystReview
 # Low-Medium rows aren't a detected issue, same scope the Anomalies page
 # itself already filters "Material Anomaly Events" to.
 _MATERIAL_ANOMALY_BANDS = ("High", "Critical")
-
-_CLAIM_MODELS: dict[str, type] = {
-    "operational_issue": OperationalIssue,
-    "reconciliation_break": ReconciliationBreak,
-}
-
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -75,17 +73,22 @@ def _claim_count(
 ) -> dict[str, int]:
     start_dt, end_dt = parse_date_bound(start_date), parse_date_bound(end_date, end_of_day=True)
 
-    def _detected_at_col(model: type):
-        return model.detected_at
-
+    # Filtered by each row's real transaction date, NOT detected_at -- see
+    # query_filters.py's module docstring for why (every OperationalIssue/
+    # ReconciliationBreak row shares one detected_at instant, the moment
+    # the pipeline ran, not spread across the data's own timeline).
     counts = {}
-    for signal_type, model in _CLAIM_MODELS.items():
-        query = db.query(model).filter_by(tenant_bank_id=tenant_bank_id)
-        if start_dt:
-            query = query.filter(_detected_at_col(model) >= start_dt)
-        if end_dt:
-            query = query.filter(_detected_at_col(model) <= end_dt)
-        counts[signal_type] = query.count()
+    operational_ids = operational_issue_ids_in_date_range(db, tenant_bank_id, start_date, end_date)
+    operational_query = db.query(OperationalIssue).filter_by(tenant_bank_id=tenant_bank_id)
+    if operational_ids is not None:
+        operational_query = operational_query.filter(OperationalIssue.id.in_(operational_ids))
+    counts["operational_issue"] = operational_query.count()
+
+    reconciliation_ids = reconciliation_break_ids_in_date_range(db, tenant_bank_id, start_date, end_date)
+    reconciliation_query = db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id)
+    if reconciliation_ids is not None:
+        reconciliation_query = reconciliation_query.filter(ReconciliationBreak.id.in_(reconciliation_ids))
+    counts["reconciliation_break"] = reconciliation_query.count()
 
     fraud_query = db.query(EntitySnapshot).filter(
         EntitySnapshot.tenant_bank_id == tenant_bank_id, EntitySnapshot.anomaly_band.in_(_MATERIAL_ANOMALY_BANDS),
@@ -199,33 +202,47 @@ def get_review_quality_trend(
     return points
 
 
-def get_review_quality_trend_daily(db: Session, tenant_bank_id: str, days: int = 7) -> list[dict[str, Any]]:
-    """Confirmed/dismissed counts per calendar day, over the last `days`
-    days of this tenant's own review activity (not wall-clock "now" --
-    same reasoning app/dashboard.py's _new_patterns_detected() uses:
-    this is synthetic pilot data with its own fixed timeline, so a
-    real-time cutoff would silently go to zero once wall-clock time moves
-    past that range). Honestly sparse/empty on days with no real review
-    activity -- never backfilled or interpolated.
+def get_review_quality_trend_daily(
+    db: Session,
+    tenant_bank_id: str,
+    days: int = 7,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[dict[str, Any]]:
+    """Confirmed/dismissed counts per calendar day.
+
+    With no start_date/end_date, this is the last `days` days of this
+    tenant's own review activity (not wall-clock "now" -- same reasoning
+    app/dashboard.py's _new_patterns_detected() uses: this is synthetic
+    pilot data with its own fixed timeline, so a real-time cutoff would
+    silently go to zero once wall-clock time moves past that range).
+    start_date/end_date (see query_filters.py), when given, replace that
+    trailing-days cutoff with an explicit range instead -- the Insights
+    pages' Date Range filter. Honestly sparse/empty on days with no real
+    review activity -- never backfilled or interpolated.
     """
-    reviews = (
-        db.query(AnalystReview)
-        .filter(
-            AnalystReview.tenant_bank_id == tenant_bank_id,
-            AnalystReview.status.in_((CONFIRMED, DISMISSED)),
-            AnalystReview.reviewed_at.isnot(None),
-        )
-        .order_by(AnalystReview.reviewed_at.asc())
-        .all()
+    query = db.query(AnalystReview).filter(
+        AnalystReview.tenant_bank_id == tenant_bank_id,
+        AnalystReview.status.in_((CONFIRMED, DISMISSED)),
+        AnalystReview.reviewed_at.isnot(None),
     )
+    start_dt, end_dt = parse_date_bound(start_date), parse_date_bound(end_date, end_of_day=True)
+    if start_dt:
+        query = query.filter(AnalystReview.reviewed_at >= start_dt)
+    if end_dt:
+        query = query.filter(AnalystReview.reviewed_at <= end_dt)
+    reviews = query.order_by(AnalystReview.reviewed_at.asc()).all()
     if not reviews:
         return []
 
     def _as_utc(dt: datetime) -> datetime:
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
-    latest = max(_as_utc(r.reviewed_at) for r in reviews)
-    cutoff = (latest - timedelta(days=days - 1)).date()
+    if start_dt or end_dt:
+        cutoff = None  # explicit range already applied at the query level above
+    else:
+        latest = max(_as_utc(r.reviewed_at) for r in reviews)
+        cutoff = (latest - timedelta(days=days - 1)).date()
 
     by_day: dict[Any, dict[str, int]] = {}
     for review in reviews:

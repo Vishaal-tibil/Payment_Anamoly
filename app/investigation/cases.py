@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from ..anomaly.models import EntitySnapshot
 from ..models import CanonicalEvent
 from ..operations.models import OperationalIssue
+from ..query_filters import parse_date_bound
 from ..reconciliation.models import ReconciliationBreak
 from .models import InvestigationCase, InvestigationCaseAlert
 
@@ -248,17 +249,30 @@ def compute_cases(db: Session, tenant_bank_id: str | None = None) -> dict[str, A
     return {"cases_created": cases_created, "alerts_grouped": alerts_grouped}
 
 
-def get_anomaly_type_counts(db: Session, tenant_bank_id: str | None = None) -> dict[str, Any]:
+def get_anomaly_type_counts(
+    db: Session,
+    tenant_bank_id: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> dict[str, Any]:
     """Ranked count of InvestigationCaseAlert.anomaly_type -- real named
     types ("Failure-rate spike," "Batch never settles," etc.) already
     computed by compute_cases(), just never surfaced as their own list
     before this. Read-only reshape, same "reshape, don't recompute" rule
     dashboard.py follows -- run POST /investigation/cases/compute first
     if this looks stale.
+
+    start_date/end_date (see query_filters.py) narrow to alerts whose
+    detected_at falls in that range -- the Insights pages' Date Range filter.
     """
     query = db.query(InvestigationCaseAlert.anomaly_type, func.count(InvestigationCaseAlert.id))
     if tenant_bank_id:
         query = query.filter(InvestigationCaseAlert.tenant_bank_id == tenant_bank_id)
+    start_dt, end_dt = parse_date_bound(start_date), parse_date_bound(end_date, end_of_day=True)
+    if start_dt:
+        query = query.filter(InvestigationCaseAlert.detected_at >= start_dt)
+    if end_dt:
+        query = query.filter(InvestigationCaseAlert.detected_at <= end_dt)
     rows = query.group_by(InvestigationCaseAlert.anomaly_type).all()
 
     types = sorted(
