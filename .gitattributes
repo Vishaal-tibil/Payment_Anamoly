@@ -1,0 +1,14 @@
+# Normalise to LF in the repository. Without this, files authored on Windows
+# are stored with CRLF and a Linux container gets CRLF too -- which breaks
+# shell scripts and anything parsing line-by-line inside the image. The
+# Dockerfile and compose file are the ones that actually bite.
+* text=auto eol=lf
+
+# Never touch these: the demo database and Excel/CSV fixtures are binary,
+# and "normalising" them would corrupt them.
+*.db binary
+*.db-shm binary
+*.db-wal binary
+*.xlsx binary
+*.xls binary
+*.png binary
