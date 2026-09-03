@@ -26,6 +26,25 @@ info:
     name: Vishaal
     email: vishaal.g@tibilsolutions.com
 paths:
+  /healthz:
+    get:
+      tags:
+      - Ops
+      summary: Healthz
+      description: 'Liveness probe for the container/load balancer. Deliberately does
+
+        no database work: it answers "is this process serving?", which is what
+
+        a restart policy should act on. A database problem should surface as a
+
+        real 500 from a real endpoint, not silently cycle the container.'
+      operationId: healthz_healthz_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
   /anomaly/snapshots:
     get:
       tags:

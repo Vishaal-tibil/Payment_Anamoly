@@ -1,3 +1,15 @@
+# Lower bounds, not pins -- this is the range the project is developed and
+# tested against. Docker builds resolve these once at image build time and
+# the resulting image is the immutable artifact, so a container deploy is
+# reproducible without pinning every transitive dependency here.
+#
+# scikit-learn carries the ML surface: Isolation Forest (Track B) and
+# HDBSCAN (Track D, sklearn.cluster.HDBSCAN -- built into sklearn >= 1.3,
+# NOT the separate `hdbscan` package). It pulls numpy/scipy, which is why
+# the image needs a real build toolchain-free wheel path (see Dockerfile).
+# No model artifacts are ever written to disk: every engine trains in
+# memory on each compute run and writes its scores back onto the snapshot
+# rows, so there is nothing to persist beyond the database itself.
 fastapi>=0.110
 uvicorn[standard]>=0.27
 sqlalchemy>=2.0
@@ -5,9 +17,12 @@ pandas>=2.0
 openpyxl>=3.1
 python-multipart>=0.0.9
 pydantic>=2.0
-pytest>=7.4
-httpx>=0.27
 pyyaml>=6.0
 scikit-learn>=1.3
 python-dotenv>=1.0
 mistralai>=1.0
+
+# Test-only -- kept here (not a separate requirements-dev.txt) because the
+# Dockerfile installs from a filtered copy, so they never reach the image.
+pytest>=7.4
+httpx>=0.27
