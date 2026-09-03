@@ -17,7 +17,7 @@ from app.main import app
 from app.models import CanonicalEvent
 from app.operations.models import OperationalIssue
 from app.reconciliation.models import ReconciliationBreak
-from app.review.service import get_review_quality_trend_daily, set_review
+from app.review.service import get_review, get_review_quality_trend_daily, set_review
 
 # Distinct tenant so this doesn't collide with real KeyBank/Meridian data
 # in the shared file-backed demo db -- same pattern every other endpoint
@@ -221,6 +221,76 @@ def test_investigation_case_validate_404_for_wrong_tenant(client):
     resp = client.post(f"/investigation/cases/{case_id}/validate", json={"tenant_bank_id": _TENANT, "validation_status": "VALID"})
     assert resp.status_code == 200
     assert resp.json()["validation_status"] == "VALID"
+
+
+def _seed_case_with_alert(case_code: str, issue_reference_id: str) -> tuple[int, int]:
+    """Idempotent (shared file-backed demo db) case with one real
+    contributing OperationalIssue alert -- for testing that case
+    validation propagates to app/review/.
+    """
+    db = SessionLocal()
+    try:
+        issue = db.query(OperationalIssue).filter_by(tenant_bank_id=_TENANT, reference_id=issue_reference_id).one_or_none()
+        if issue is None:
+            issue = OperationalIssue(
+                issue_type="DUPLICATE_PAYMENT", tenant_bank_id=_TENANT,
+                reference_type="TRANSACTION", reference_id=issue_reference_id,
+            )
+            db.add(issue)
+            db.commit()
+            db.refresh(issue)
+
+        case = db.query(InvestigationCase).filter_by(case_code=case_code).one_or_none()
+        if case is None:
+            case = InvestigationCase(
+                case_code=case_code, tenant_bank_id=_TENANT, category="DUPLICATE_PAYMENT", title="Test Case",
+                transactions_affected=1, contributing_alerts_count=1, opened_at=datetime.now(timezone.utc),
+            )
+            db.add(case)
+            db.commit()
+            db.refresh(case)
+
+        alert = db.query(InvestigationCaseAlert).filter_by(case_id=case.id, source_id=issue.id).one_or_none()
+        if alert is None:
+            db.add(InvestigationCaseAlert(
+                case_id=case.id, tenant_bank_id=_TENANT, alert_code=f"ALT-TEST-{case.id}", source_type="OPERATIONAL_ISSUE",
+                source_id=issue.id, anomaly_category="Operational", anomaly_type="Duplicate payment",
+                description="test", detected_at=datetime.now(timezone.utc),
+            ))
+            db.commit()
+        return case.id, issue.id
+    finally:
+        db.close()
+
+
+def test_case_validation_propagates_to_contributing_alert_review(client):
+    case_id, issue_id = _seed_case_with_alert("CNO-VALIDTEST1", "TXN-VALIDATE-TEST-1")
+
+    resp = client.post(
+        f"/investigation/cases/{case_id}/validate",
+        json={"tenant_bank_id": _TENANT, "validation_status": "VALID", "reviewed_by": "test-analyst@example.com"},
+    )
+    assert resp.status_code == 200
+
+    db = SessionLocal()
+    try:
+        review = get_review(db, "operational_issue", str(issue_id), _TENANT)
+        assert review is not None
+        assert review.status == "CONFIRMED"
+        assert review.reviewed_by == "test-analyst@example.com"
+    finally:
+        db.close()
+
+    # Marking it Invalid instead flips the same real review to DISMISSED --
+    # not a second, disconnected row.
+    resp = client.post(f"/investigation/cases/{case_id}/validate", json={"tenant_bank_id": _TENANT, "validation_status": "INVALID"})
+    assert resp.status_code == 200
+    db = SessionLocal()
+    try:
+        review = get_review(db, "operational_issue", str(issue_id), _TENANT)
+        assert review.status == "DISMISSED"
+    finally:
+        db.close()
 
 
 def test_investigation_cases_priority_level_filter(client):

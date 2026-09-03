@@ -1218,6 +1218,23 @@ paths:
       tags:
       - Analyst
       summary: Validate Investigation Case
+      description: 'Marking a case Valid/Invalid now propagates a real AnalystReview
+
+        (CONFIRMED/DISMISSED) to every one of its contributing alerts -- this
+
+        is the only real analyst feedback loop that feeds Detection
+
+        Performance''s confirmation_rate/false_positive_rate (app/review/,
+
+        never validation_status itself, which stays a display-only summary
+
+        of what those real reviews already say). A case is at least as
+
+        authoritative as its parts, so this overwrites any prior individual
+
+        review on a contributing alert (same "cluster overrides its own
+
+        members" rule InvestigationCase.severity_score already follows).'
       operationId: validate_investigation_case_investigation_cases__case_id__validate_post
       parameters:
       - name: case_id
@@ -2419,6 +2436,11 @@ components:
         validation_status:
           type: string
           title: Validation Status
+        reviewed_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reviewed By
       type: object
       required:
       - tenant_bank_id
