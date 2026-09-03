@@ -5,6 +5,7 @@ LLM narration and Investigation Cases writes below.
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -15,21 +16,24 @@ from ..agent.models import AgentNarrative
 from ..agent.narration import (
     facts_for_beneficiary_snapshot,
     facts_for_entity_snapshot,
+    facts_for_investigation_case,
     facts_for_operational_issue,
     facts_for_reconciliation_break,
     get_or_create_narrative,
 )
 from ..anomaly.categories import FUNNEL_ACCOUNT_THRESHOLD, categories_for_snapshots
 from ..anomaly.models import BeneficiarySnapshot, EntitySnapshot
+from ..canonical_event_lookup import CanonicalEventLookup
 from ..dashboard import (
     get_detection_attention,
     get_detection_performance,
     get_overview,
     get_priority_distribution,
     get_rail_stats,
+    get_transaction_status_breakdown,
 )
 from ..database import get_db
-from ..date_filter import datetime_bounds
+from ..date_filter import date_in_range, datetime_bounds
 from ..exposure import (
     get_anomaly_heatmap,
     get_exposure_by_domain,
@@ -43,6 +47,8 @@ from ..exposure import (
 from ..investigation.cases import compute_cases as compute_investigation_cases
 from ..investigation.cases import get_anomaly_type_counts
 from ..investigation.models import InvestigationCase, InvestigationCaseAlert
+from ..investigation.patterns import get_ai_identified_patterns
+from ..investigation.sla import get_cases_approaching_sla, resolve_real_case_anchor
 from ..operations.models import OperationalIssue
 from ..priority import priority_levels_for_breaks, priority_levels_for_issues
 from ..reconciliation.models import ReconciliationBreak
@@ -362,14 +368,21 @@ async def dashboard_exposure(
     underlying real claims (see app/exposure.py's _all_claims()).
     start_date/end_date (optional "YYYY-MM-DD") scope every figure here to
     that real transaction window.
+
+    One CanonicalEventLookup built here and passed to all six calls below
+    -- confirmed via direct latency measurement that letting each of them
+    independently build its own (the previous shape) made this endpoint
+    slower, not faster: six full CanonicalEvent scans per request instead
+    of one.
     """
+    lookup = CanonicalEventLookup(db, tenant_bank_id)
     return {
-        "by_domain": get_exposure_by_domain(db, tenant_bank_id, start_date, end_date),
-        "trend": get_exposure_trend(db, tenant_bank_id, start_date, end_date),
-        "mitigation": get_mitigation_progress(db, tenant_bank_id, start_date, end_date),
-        "mitigation_by_domain": get_mitigation_progress_by_domain(db, tenant_bank_id, start_date, end_date),
-        "payment_value_by_rail": get_payment_value_by_rail(db, tenant_bank_id, start_date, end_date),
-        "normalcy": get_payment_normalcy(db, tenant_bank_id, start_date, end_date),
+        "by_domain": get_exposure_by_domain(db, tenant_bank_id, start_date, end_date, lookup),
+        "trend": get_exposure_trend(db, tenant_bank_id, start_date, end_date, lookup),
+        "mitigation": get_mitigation_progress(db, tenant_bank_id, start_date, end_date, lookup),
+        "mitigation_by_domain": get_mitigation_progress_by_domain(db, tenant_bank_id, start_date, end_date, lookup),
+        "payment_value_by_rail": get_payment_value_by_rail(db, tenant_bank_id, start_date, end_date, lookup),
+        "normalcy": get_payment_normalcy(db, tenant_bank_id, start_date, end_date, lookup),
     }
 
 
@@ -434,17 +447,38 @@ async def dashboard_detection_attention(tenant_bank_id: str, db: Session = Depen
     return get_detection_attention(db, tenant_bank_id)
 
 
+@router.get("/dashboard/transaction-status-breakdown")
+async def dashboard_transaction_status_breakdown(tenant_bank_id: str, db: Session = Depends(get_db)):
+    """Real counts per CanonicalEvent.status -- see
+    get_transaction_status_breakdown()'s docstring.
+    """
+    return get_transaction_status_breakdown(db, tenant_bank_id)
+
+
+@router.get("/dashboard/cases-approaching-sla")
+async def dashboard_cases_approaching_sla(tenant_bank_id: str, db: Session = Depends(get_db)):
+    """Real PENDING cases overdue or nearing their priority's real v1 SLA
+    policy window -- see get_cases_approaching_sla()'s docstring for how
+    each case's real age is resolved (never opened_at directly).
+    """
+    return get_cases_approaching_sla(db, tenant_bank_id)
+
+
 _FACT_BUILDERS = {
     "operational_issue": (OperationalIssue, facts_for_operational_issue),
     "reconciliation_break": (ReconciliationBreak, facts_for_reconciliation_break),
     "fraud_anomaly": (EntitySnapshot, facts_for_entity_snapshot),
     "funnel_account": (BeneficiarySnapshot, facts_for_beneficiary_snapshot),
+    # facts_for_investigation_case takes (case, alerts) instead of just a
+    # row -- narrate_endpoint special-cases this signal_type below to
+    # fetch the case's alerts before building facts.
+    "investigation_case": (InvestigationCase, facts_for_investigation_case),
 }
 
 
 class NarrateRequest(BaseModel):
-    signal_type: str  # "operational_issue" | "reconciliation_break" | "fraud_anomaly" | "funnel_account"
-    signal_id: int  # the primary key of the OperationalIssue/ReconciliationBreak/EntitySnapshot/BeneficiarySnapshot row
+    signal_type: str  # "operational_issue" | "reconciliation_break" | "fraud_anomaly" | "funnel_account" | "investigation_case"
+    signal_id: int  # the primary key of the OperationalIssue/ReconciliationBreak/EntitySnapshot/BeneficiarySnapshot/InvestigationCase row
     tenant_bank_id: str
     force: bool = False  # regenerate even if a cached narrative already exists
 
@@ -461,6 +495,13 @@ def _narrative_summary(n: AgentNarrative) -> dict:
             "title": n.recommended_action_title,
             "description": n.recommended_action_description,
         },
+        # Full ranked list (1-3 items). Cached rows generated before this
+        # field existed have recommended_actions=None -- fall back to the
+        # single legacy action rather than an empty list, so old cached
+        # narratives (real generations, not fabricated) still display.
+        "recommended_actions": n.recommended_actions or [
+            {"title": n.recommended_action_title, "description": n.recommended_action_description, "why": None},
+        ],
         "model": n.model,
         "generated_at": n.generated_at,
     }
@@ -481,9 +522,19 @@ async def narrate_endpoint(body: NarrateRequest, db: Session = Depends(get_db)):
     if row is None:
         raise HTTPException(status_code=404, detail=f"No {body.signal_type} row with id={body.signal_id} for this tenant")
 
+    if body.signal_type == "investigation_case":
+        alerts = (
+            db.query(InvestigationCaseAlert)
+            .filter_by(case_id=row.id, tenant_bank_id=body.tenant_bank_id)
+            .all()
+        )
+        facts = facts_fn(db, row, alerts)
+    else:
+        facts = facts_fn(row)
+
     try:
         narrative = await get_or_create_narrative(
-            db, body.signal_type, str(body.signal_id), body.tenant_bank_id, facts_fn(row), force=body.force,
+            db, body.signal_type, str(body.signal_id), body.tenant_bank_id, facts, force=body.force,
         )
     except RuntimeError as exc:  # MISTRAL_API_KEY not set
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -545,6 +596,16 @@ async def list_anomaly_type_counts(tenant_bank_id: str, db: Session = Depends(ge
     return get_anomaly_type_counts(db, tenant_bank_id=tenant_bank_id)
 
 
+@router.get("/investigation/ai-patterns")
+async def list_ai_identified_patterns(tenant_bank_id: str, db: Session = Depends(get_db)):
+    """Real, ranked category+rail patterns -- see
+    get_ai_identified_patterns()'s docstring for exactly which real
+    numbers back each field (never new ML pattern discovery, a real
+    aggregation of already-computed data).
+    """
+    return get_ai_identified_patterns(db, tenant_bank_id=tenant_bank_id)
+
+
 def _investigation_case_summary(case: InvestigationCase) -> dict:
     return {
         "id": case.id,
@@ -558,6 +619,7 @@ def _investigation_case_summary(case: InvestigationCase) -> dict:
         "contributing_alerts_count": case.contributing_alerts_count,
         "severity_score": case.severity_score,
         "priority_level": case.priority_level,
+        "priority_reason": case.priority_reason,
         "validation_status": case.validation_status,
         "opened_at": case.opened_at,
         "updated_at": case.updated_at,
@@ -583,6 +645,8 @@ def _investigation_case_alert_summary(alert: InvestigationCaseAlert) -> dict:
 async def list_investigation_cases(
     tenant_bank_id: str,
     priority_level: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -590,17 +654,45 @@ async def list_investigation_cases(
     base_query = db.query(InvestigationCase).filter(InvestigationCase.tenant_bank_id == tenant_bank_id)
     if priority_level:
         base_query = base_query.filter(InvestigationCase.priority_level == priority_level.capitalize())
-    total = base_query.count()
-    rows = (
-        base_query.order_by(InvestigationCase.opened_at.desc())
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
-    return {
-        "total": total,
-        "cases": [_investigation_case_summary(c) for c in rows],
-    }
+
+    if start_date is None and end_date is None:
+        total = base_query.count()
+        rows = (
+            base_query.order_by(InvestigationCase.opened_at.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        return {"total": total, "cases": [_investigation_case_summary(c) for c in rows]}
+
+    # start_date/end_date filter on each case's real underlying event time
+    # (resolve_real_case_anchor -- same real anchor app/investigation/
+    # sla.py's SLA aging uses), never InvestigationCase.opened_at directly:
+    # that column is a batch-compute-run timestamp for non-fraud cases, not
+    # a real event time, so filtering on it directly would silently return
+    # the same cases regardless of which range was picked. Computed in
+    # Python (one batched query for every candidate case's alerts, one
+    # batched CanonicalEvent lookup) rather than a SQL WHERE, same
+    # "reshape, don't recompute" + N+1-avoidance shape the rest of this
+    # codebase already follows for this exact kind of join.
+    all_cases = base_query.all()
+    case_ids = [c.id for c in all_cases]
+    alerts_by_case_id: dict[int, list[InvestigationCaseAlert]] = defaultdict(list)
+    if case_ids:
+        for alert in db.query(InvestigationCaseAlert).filter(InvestigationCaseAlert.case_id.in_(case_ids)).all():
+            alerts_by_case_id[alert.case_id].append(alert)
+    lookup = CanonicalEventLookup(db, tenant_bank_id)
+
+    anchored = [
+        (case, resolve_real_case_anchor(case, alerts_by_case_id.get(case.id, []), lookup))
+        for case in all_cases
+    ]
+    anchored = [(c, a) for c, a in anchored if date_in_range(a, start_date, end_date)]
+    anchored.sort(key=lambda pair: pair[1], reverse=True)
+
+    total = len(anchored)
+    page = anchored[offset : offset + limit]
+    return {"total": total, "cases": [_investigation_case_summary(c) for c, _anchor in page]}
 
 
 @router.get("/investigation/cases/{case_id}")

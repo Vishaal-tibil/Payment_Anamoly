@@ -30,6 +30,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from .anomaly.models import EntitySnapshot
+from .canonical_event_lookup import CanonicalEventLookup
 from .date_filter import date_in_range, occurred_at_bounds
 from .models import CanonicalEvent
 from .operations.models import OperationalIssue
@@ -91,15 +92,11 @@ def _fraud_anomaly_claims(db: Session, tenant_bank_id: str) -> list[dict[str, An
     return claims
 
 
-def _reconciliation_claims(db: Session, tenant_bank_id: str) -> list[dict[str, Any]]:
+def _reconciliation_claims(db: Session, tenant_bank_id: str, lookup: CanonicalEventLookup) -> list[dict[str, Any]]:
     breaks = db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id).all()
     claims = []
     for brk in breaks:
-        event = (
-            db.query(CanonicalEvent)
-            .filter_by(tenant_bank_id=tenant_bank_id, rail_type=brk.rail_type, transaction_id=brk.transaction_id)
-            .one_or_none()
-        )
+        event = lookup.by_rail_and_transaction_id(brk.rail_type, brk.transaction_id)
         occurred = _parse_occurred_at(event.transaction_occurred_at) if event else None
         claims.append({
             "signal_type": "reconciliation_break",
@@ -112,7 +109,7 @@ def _reconciliation_claims(db: Session, tenant_bank_id: str) -> list[dict[str, A
     return claims
 
 
-def _operational_claims(db: Session, tenant_bank_id: str) -> list[dict[str, Any]]:
+def _operational_claims(db: Session, tenant_bank_id: str, lookup: CanonicalEventLookup) -> list[dict[str, Any]]:
     issues = (
         db.query(OperationalIssue)
         .filter(
@@ -124,17 +121,9 @@ def _operational_claims(db: Session, tenant_bank_id: str) -> list[dict[str, Any]
     claims = []
     for issue in issues:
         if issue.issue_type in _TRANSACTION_LEVEL_ISSUE_TYPES:
-            events = (
-                db.query(CanonicalEvent)
-                .filter_by(tenant_bank_id=tenant_bank_id, transaction_id=issue.reference_id)
-                .all()
-            )
+            events = lookup.all_by_transaction_id(issue.reference_id)
         else:  # BATCH_NOT_SETTLED -- every transaction in the overdue batch
-            events = (
-                db.query(CanonicalEvent)
-                .filter_by(tenant_bank_id=tenant_bank_id, batch_id=issue.reference_id)
-                .all()
-            )
+            events = lookup.all_by_batch_id(issue.reference_id)
         amount = sum(abs(e.amount) for e in events if e.amount is not None)
         occurred = _parse_occurred_at(events[0].transaction_occurred_at) if events else None
         rail_type = events[0].rail_type if events else None
@@ -151,11 +140,26 @@ def _operational_claims(db: Session, tenant_bank_id: str) -> list[dict[str, Any]
 
 def _all_claims(
     db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
+    lookup: CanonicalEventLookup | None = None,
 ) -> list[dict[str, Any]]:
+    # One batched CanonicalEvent lookup for this whole call -- confirmed
+    # via direct latency measurement that querying it once per break/issue
+    # row (the previous shape) was the dominant real cost behind slow page
+    # loads, once WAL mode ruled out DB-level lock contention. Accepts a
+    # pre-built lookup (not just db) so GET /dashboard/exposure -- which
+    # calls six of this module's functions in one request, each ultimately
+    # reaching _all_claims() -- can share ONE lookup across all six
+    # instead of each independently re-scanning every CanonicalEvent row;
+    # confirmed via direct measurement that skipping this made that
+    # endpoint slower, not faster (6 full scans instead of ~94 small
+    # point-queries). Standalone callers (tests, other endpoints) still
+    # work unchanged -- lookup is built here if not supplied.
+    if lookup is None:
+        lookup = CanonicalEventLookup(db, tenant_bank_id)
     claims = (
         _fraud_anomaly_claims(db, tenant_bank_id)
-        + _reconciliation_claims(db, tenant_bank_id)
-        + _operational_claims(db, tenant_bank_id)
+        + _reconciliation_claims(db, tenant_bank_id, lookup)
+        + _operational_claims(db, tenant_bank_id, lookup)
     )
     if start_date is None and end_date is None:
         return claims
@@ -169,6 +173,7 @@ def _all_claims(
 
 def get_payment_normalcy(
     db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
+    lookup: CanonicalEventLookup | None = None,
 ) -> dict[str, Any]:
     """"Payments completed normally" -- the fraction of real transactions
     NOT touched by any detected reconciliation break or transaction/batch-
@@ -207,12 +212,13 @@ def get_payment_normalcy(
         if key in in_range_events:
             touched.add(key)
 
+    event_lookup = lookup if lookup is not None else CanonicalEventLookup(db, tenant_bank_id)
     for issue in (
         db.query(OperationalIssue)
         .filter(OperationalIssue.tenant_bank_id == tenant_bank_id, OperationalIssue.issue_type.in_(_TRANSACTION_LEVEL_ISSUE_TYPES))
         .all()
     ):
-        event = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, transaction_id=issue.reference_id).first()
+        event = event_lookup.first_by_transaction_id(issue.reference_id)
         if event:
             key = (event.rail_type, event.transaction_id)
             if key in in_range_events:
@@ -223,7 +229,7 @@ def get_payment_normalcy(
         .filter(OperationalIssue.tenant_bank_id == tenant_bank_id, OperationalIssue.issue_type.in_(_BATCH_LEVEL_ISSUE_TYPES))
         .all()
     ):
-        for event in db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, batch_id=issue.reference_id).all():
+        for event in event_lookup.all_by_batch_id(issue.reference_id):
             key = (event.rail_type, event.transaction_id)
             if key in in_range_events:
                 touched.add(key)
@@ -237,8 +243,9 @@ def get_payment_normalcy(
 
 def get_exposure_by_domain(
     db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
+    lookup: CanonicalEventLookup | None = None,
 ) -> dict[str, Any]:
-    claims = _all_claims(db, tenant_bank_id, start_date, end_date)
+    claims = _all_claims(db, tenant_bank_id, start_date, end_date, lookup)
     totals: dict[str, float] = defaultdict(float)
     for claim in claims:
         totals[claim["signal_type"]] += claim["amount"]
@@ -257,6 +264,7 @@ def get_exposure_by_domain(
 
 def get_exposure_trend(
     db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
+    lookup: CanonicalEventLookup | None = None,
 ) -> dict[str, Any]:
     """Weekly, not daily -- this dataset's real granularity (Track A's own
     windowing is weekly; detection-run timestamps cluster on whichever day
@@ -265,7 +273,7 @@ def get_exposure_trend(
     week the underlying transaction occurred (Monday-start, same
     convention as app/anomaly/features.py), not by when it was detected.
     """
-    claims = _all_claims(db, tenant_bank_id, start_date, end_date)
+    claims = _all_claims(db, tenant_bank_id, start_date, end_date, lookup)
     by_week: dict[datetime, float] = defaultdict(float)
     for claim in claims:
         if claim["week_start"] is not None:
@@ -280,6 +288,7 @@ def get_exposure_trend(
 
 def get_mitigation_progress(
     db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
+    lookup: CanonicalEventLookup | None = None,
 ) -> dict[str, Any]:
     """Residual = dollar exposure of claims no analyst has acted on yet
     (PENDING, or never reviewed at all). Mitigated = dollar exposure of
@@ -291,7 +300,7 @@ def get_mitigation_progress(
     real trend would mostly be zero followed by a step change, which
     would look more like a chart bug than real data.
     """
-    claims = _all_claims(db, tenant_bank_id, start_date, end_date)
+    claims = _all_claims(db, tenant_bank_id, start_date, end_date, lookup)
     residual = 0.0
     mitigated = 0.0
     for claim in claims:
@@ -315,12 +324,13 @@ def get_mitigation_progress(
 
 def get_mitigation_progress_by_domain(
     db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
+    lookup: CanonicalEventLookup | None = None,
 ) -> dict[str, Any]:
     """Same residual/mitigated split as get_mitigation_progress(), broken
     out per engine instead of combined into one total -- what the
     Anomalies page's "Mitigated vs. Residual Exposure" column reads.
     """
-    claims = _all_claims(db, tenant_bank_id, start_date, end_date)
+    claims = _all_claims(db, tenant_bank_id, start_date, end_date, lookup)
     labels = {
         "fraud_anomaly": "Fraud / Anomaly",
         "reconciliation_break": "Reconciliation",
@@ -389,6 +399,7 @@ def get_anomaly_heatmap(
 
 def get_payment_value_by_rail(
     db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
+    lookup: CanonicalEventLookup | None = None,
 ) -> dict[str, Any]:
     """Protected vs Impacted per real rail (ACH/WIRE/CARD/FEDNOW/CHEQUE --
     never a rail that doesn't exist in this schema). Impacted is only ever
@@ -396,6 +407,8 @@ def get_payment_value_by_rail(
     definite per-rail amount and rail_type on every row); Protected is
     each rail's real total transaction volume minus that.
     """
+    if lookup is None:
+        lookup = CanonicalEventLookup(db, tenant_bank_id)
     lower, upper = occurred_at_bounds(start_date, end_date)
     events_query = db.query(CanonicalEvent.rail_type, CanonicalEvent.amount).filter(
         CanonicalEvent.tenant_bank_id == tenant_bank_id, CanonicalEvent.amount.isnot(None),
@@ -410,7 +423,7 @@ def get_payment_value_by_rail(
         rail_totals[rail_type] += amount
 
     impacted_by_rail: dict[str, float] = defaultdict(float)
-    for claim in _reconciliation_claims(db, tenant_bank_id):
+    for claim in _reconciliation_claims(db, tenant_bank_id, lookup):
         if claim["rail_type"] and date_in_range(claim["occurred"], start_date, end_date):
             impacted_by_rail[claim["rail_type"]] += claim["amount"]
 

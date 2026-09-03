@@ -22,10 +22,21 @@ from uuid import uuid4
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from ..agent.models import AgentNarrative
 from ..anomaly.models import EntitySnapshot
-from ..models import CanonicalEvent
+from ..canonical_event_lookup import CanonicalEventLookup
 from ..operations.models import OperationalIssue
-from ..priority import priority_levels_for_breaks, priority_levels_for_issues
+from ..priority import (
+    CRITICAL,
+    CRITICAL_MIN,
+    HIGH,
+    HIGH_MIN,
+    LOW,
+    MEDIUM,
+    MEDIUM_MIN,
+    priority_levels_for_breaks,
+    priority_levels_for_issues,
+)
 from ..reconciliation.models import ReconciliationBreak
 from .models import InvestigationCase, InvestigationCaseAlert
 
@@ -55,7 +66,7 @@ _RECONCILIATION_LABELS = {
 # priority.py's 0-100 scale, only its real anomaly_band (Critical/High,
 # the only two bands compute_cases() ever clusters -- see
 # _collect_fraud_signals). Matches priority.py's own band cutoffs
-# (_CRITICAL_MIN=85, _HIGH_MIN=60) rather than inventing new ones.
+# (CRITICAL_MIN=85, HIGH_MIN=60) rather than inventing new ones.
 _FRAUD_BAND_SEVERITY_SCORE = {"Critical": 90.0, "High": 70.0}
 
 
@@ -80,15 +91,16 @@ def _as_utc(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def _rail_for_operational_issue(db: Session, issue: OperationalIssue) -> str | None:
+def _rail_for_operational_issue(issue: OperationalIssue, lookup: CanonicalEventLookup) -> str | None:
     if issue.issue_type in _PARTY_LEVEL_ISSUE_TYPES:
         return None
-    if issue.reference_type in ("TRANSACTION", "BATCH"):
-        filters = {"tenant_bank_id": issue.tenant_bank_id}
-        filters["transaction_id" if issue.reference_type == "TRANSACTION" else "batch_id"] = issue.reference_id
-        event = db.query(CanonicalEvent).filter_by(**filters).first()
-        return event.rail_type if event else None
-    return None
+    if issue.reference_type == "TRANSACTION":
+        event = lookup.first_by_transaction_id(issue.reference_id)
+    elif issue.reference_type == "BATCH":
+        event = lookup.first_by_batch_id(issue.reference_id)
+    else:
+        return None
+    return event.rail_type if event else None
 
 
 class _PriorityCache:
@@ -98,12 +110,19 @@ class _PriorityCache:
     from that tenant -- not a separate heuristic, so a case's priority can
     never disagree with the same issue/break's own entry on
     GET /operations/issues or /reconciliation/breaks.
+
+    Also caches a CanonicalEventLookup per tenant (same lazy-per-tenant
+    shape) -- compute_cases() may run across all tenants at once
+    (tenant_bank_id=None), so this can't just build one lookup up front;
+    it's built the first time a given tenant is actually seen, then reused
+    for every signal from that tenant instead of a query per row.
     """
 
     def __init__(self, db: Session):
         self._db = db
         self._issues: dict[str, dict[int, dict]] = {}
         self._breaks: dict[str, dict[int, dict]] = {}
+        self._event_lookups: dict[str, CanonicalEventLookup] = {}
 
     def for_issue(self, tenant_bank_id: str, issue_id: int) -> tuple[float | None, str | None]:
         if tenant_bank_id not in self._issues:
@@ -116,6 +135,11 @@ class _PriorityCache:
             self._breaks[tenant_bank_id] = priority_levels_for_breaks(self._db, tenant_bank_id)
         entry = self._breaks[tenant_bank_id].get(break_id)
         return (entry["severity_score"], entry["priority_level"]) if entry else (None, None)
+
+    def event_lookup(self, tenant_bank_id: str) -> CanonicalEventLookup:
+        if tenant_bank_id not in self._event_lookups:
+            self._event_lookups[tenant_bank_id] = CanonicalEventLookup(self._db, tenant_bank_id)
+        return self._event_lookups[tenant_bank_id]
 
 
 def _collect_operational_signals(db: Session, tenant_bank_id: str | None, priorities: _PriorityCache) -> list[_Signal]:
@@ -130,7 +154,7 @@ def _collect_operational_signals(db: Session, tenant_bank_id: str | None, priori
         signals.append(_Signal(
             tenant_bank_id=issue.tenant_bank_id,
             category=issue.issue_type,
-            payment_rail=_rail_for_operational_issue(db, issue),
+            payment_rail=_rail_for_operational_issue(issue, priorities.event_lookup(issue.tenant_bank_id)),
             detected_at=_as_utc(issue.detected_at),
             source_type="OPERATIONAL_ISSUE",
             source_id=issue.id,
@@ -204,6 +228,30 @@ def _collect_fraud_signals(db: Session, tenant_bank_id: str | None) -> list[_Sig
     return signals
 
 
+def _priority_reason(worst: _Signal | None, cluster_size: int) -> str | None:
+    """Plain-language explanation of the case's already-computed
+    priority_level/severity_score -- which contributing alert drove it
+    and the real band cutoff it crossed, quoted from priority.py rather
+    than restated as new numbers. Nothing here is a new computation;
+    `worst` (the highest-severity_score signal in the cluster) is the
+    same one _create_case already uses for the case's own
+    severity_score/priority_level.
+    """
+    if worst is None or worst.severity_score is None or worst.priority_level is None:
+        return None
+
+    band = worst.priority_level
+    cutoff = {CRITICAL: CRITICAL_MIN, HIGH: HIGH_MIN, MEDIUM: MEDIUM_MIN, LOW: 0.0}.get(band, 0.0)
+    driver = (
+        f"its own alert ({worst.anomaly_type.lower()})" if cluster_size == 1
+        else f"its most severe contributing alert ({worst.anomaly_type.lower()}, of {cluster_size} in this case)"
+    )
+    return (
+        f"Rated {band} priority because of {driver}, which scored {worst.severity_score:.0f}/100 on real "
+        f"peer-relative severity -- at or above the {band} threshold of {cutoff:.0f}."
+    )
+
+
 def _case_title(category: str, payment_rail: str | None) -> str:
     label = (
         _OPERATIONAL_ISSUE_LABELS.get(category)
@@ -236,6 +284,7 @@ def _create_case(db: Session, tenant: str, category: str, rail: str | None, clus
         contributing_alerts_count=len(cluster),
         severity_score=worst.severity_score if worst else None,
         priority_level=worst.priority_level if worst else None,
+        priority_reason=_priority_reason(worst, len(cluster)),
         validation_status="PENDING",
         opened_at=cluster[0].detected_at,
     )
@@ -261,6 +310,14 @@ def _create_case(db: Session, tenant: str, category: str, rail: str | None, clus
 def compute_cases(db: Session, tenant_bank_id: str | None = None) -> dict[str, Any]:
     """Rebuilds InvestigationCase/InvestigationCaseAlert rows for the
     requested scope. Fully derived -- deletes and rebuilds every run.
+
+    Also purges any cached investigation_case AgentNarrative rows for
+    this scope. Necessary, not just tidiness: case.id is autoincrement
+    and case_code is freshly random (uuid4()) on every rebuild, so a
+    narrative cached under the OLD id/case_code would otherwise get
+    silently served against whatever unrelated case inherits that same
+    numeric id next -- confirmed live (a stale "CNO-36F8D5" narrative
+    rendered on a since-renumbered case that was actually CNO-7EA196).
     """
     priorities = _PriorityCache(db)
     all_signals = (
@@ -271,11 +328,14 @@ def compute_cases(db: Session, tenant_bank_id: str | None = None) -> dict[str, A
 
     alert_delete = db.query(InvestigationCaseAlert)
     case_delete = db.query(InvestigationCase)
+    narrative_delete = db.query(AgentNarrative).filter(AgentNarrative.signal_type == "investigation_case")
     if tenant_bank_id:
         alert_delete = alert_delete.filter(InvestigationCaseAlert.tenant_bank_id == tenant_bank_id)
         case_delete = case_delete.filter(InvestigationCase.tenant_bank_id == tenant_bank_id)
+        narrative_delete = narrative_delete.filter(AgentNarrative.tenant_bank_id == tenant_bank_id)
     alert_delete.delete(synchronize_session=False)
     case_delete.delete(synchronize_session=False)
+    narrative_delete.delete(synchronize_session=False)
 
     grouped: dict[tuple[str, str, str | None], list[_Signal]] = defaultdict(list)
     for s in all_signals:

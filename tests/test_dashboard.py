@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from app.anomaly.models import EntitySnapshot
-from app.dashboard import get_detection_performance, get_overview, get_rail_stats
+from app.dashboard import get_detection_performance, get_overview, get_rail_stats, get_transaction_status_breakdown
 from app.models import CanonicalEvent, Individual, Merchant
 from app.operations.models import OperationalIssue
 from app.reconciliation.models import ReconciliationBreak
@@ -109,6 +109,28 @@ def test_overview_tenant_isolation(db_session):
     result = get_overview(db_session, "KEYBANK")
 
     assert result["total_transactions"] == 1
+
+
+def test_transaction_status_breakdown_counts_real_statuses(db_session):
+    _make_event(db_session, transaction_id="TXN-1", status="SETTLED")
+    _make_event(db_session, transaction_id="TXN-2", status="SETTLED")
+    _make_event(db_session, transaction_id="TXN-3", status="FAILED")
+    _make_event(db_session, transaction_id="TXN-4", status=None)
+
+    result = get_transaction_status_breakdown(db_session, "KEYBANK")
+
+    assert result["total_transactions"] == 4
+    assert result["counts_by_status"] == {"SETTLED": 2, "FAILED": 1, "UNKNOWN": 1}
+
+
+def test_transaction_status_breakdown_tenant_isolation(db_session):
+    _make_event(db_session, tenant_bank_id="KEYBANK", transaction_id="TXN-1", status="SETTLED")
+    _make_event(db_session, tenant_bank_id="MTB", transaction_id="TXN-2", status="FAILED")
+
+    result = get_transaction_status_breakdown(db_session, "KEYBANK")
+
+    assert result["total_transactions"] == 1
+    assert result["counts_by_status"] == {"SETTLED": 1}
 
 
 def test_rail_stats_groups_by_real_rail_types(db_session):

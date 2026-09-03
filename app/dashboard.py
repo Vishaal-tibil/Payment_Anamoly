@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from .anomaly.categories import get_pattern_mix
 from .anomaly.models import EntitySnapshot
+from .canonical_event_lookup import CanonicalEventLookup
 from .date_filter import date_in_range, datetime_bounds, occurred_at_bounds
 from .health.models import PaymentHealthScore
 from .models import CanonicalEvent, Individual, Merchant
@@ -43,7 +44,7 @@ def _parse_occurred_at(value: str | None) -> datetime | None:
         return None
 
 
-def _operational_issue_date(db: Session, tenant_bank_id: str, issue: OperationalIssue) -> datetime | None:
+def _operational_issue_date(lookup: CanonicalEventLookup, issue: OperationalIssue) -> datetime | None:
     """The real date an operational issue's own detected condition
     occurred, not when our engine detected it (detected_at is a batch
     compute timestamp, not spread meaningfully over time -- see
@@ -51,22 +52,23 @@ def _operational_issue_date(db: Session, tenant_bank_id: str, issue: Operational
     (spikes) carry their own real window_start/window_end; the other
     types need the same reference_id/batch_id join app/exposure.py's
     _operational_claims already uses for their dollar amounts.
+
+    Takes a CanonicalEventLookup (one query per caller, built once) --
+    not a db session -- since this used to run one CanonicalEvent query
+    per issue row, confirmed via direct latency measurement to be the
+    dominant real cost behind slow page loads.
     """
     if issue.window_end is not None:
         return issue.window_end
     if issue.issue_type == "BATCH_NOT_SETTLED":
-        event = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, batch_id=issue.reference_id).first()
+        event = lookup.first_by_batch_id(issue.reference_id)
     else:
-        event = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, transaction_id=issue.reference_id).first()
+        event = lookup.first_by_transaction_id(issue.reference_id)
     return _parse_occurred_at(event.transaction_occurred_at) if event else None
 
 
-def _reconciliation_break_date(db: Session, tenant_bank_id: str, brk: ReconciliationBreak) -> datetime | None:
-    event = (
-        db.query(CanonicalEvent)
-        .filter_by(tenant_bank_id=tenant_bank_id, rail_type=brk.rail_type, transaction_id=brk.transaction_id)
-        .one_or_none()
-    )
+def _reconciliation_break_date(lookup: CanonicalEventLookup, brk: ReconciliationBreak) -> datetime | None:
+    event = lookup.by_rail_and_transaction_id(brk.rail_type, brk.transaction_id)
     return _parse_occurred_at(event.transaction_occurred_at) if event else None
 
 
@@ -121,15 +123,16 @@ def get_overview(
     # _operational_issue_date's docstring) -- real date comes from the
     # underlying transaction via the same join app/exposure.py's
     # _all_claims() already uses for dollar amounts.
+    event_lookup = CanonicalEventLookup(db, tenant_bank_id)
     operational_issue_counts: dict[str, int] = defaultdict(int)
     for issue in db.query(OperationalIssue).filter_by(tenant_bank_id=tenant_bank_id).all():
-        occurred = _operational_issue_date(db, tenant_bank_id, issue)
+        occurred = _operational_issue_date(event_lookup, issue)
         if date_in_range(occurred, start_date, end_date):
             operational_issue_counts[issue.issue_type] += 1
 
     reconciliation_break_counts: dict[str, int] = defaultdict(int)
     for brk in db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id).all():
-        occurred = _reconciliation_break_date(db, tenant_bank_id, brk)
+        occurred = _reconciliation_break_date(event_lookup, brk)
         if date_in_range(occurred, start_date, end_date):
             reconciliation_break_counts[brk.detection_type] += 1
 
@@ -145,6 +148,25 @@ def get_overview(
         "operational_issue_counts": dict(operational_issue_counts),
         "reconciliation_break_counts": dict(reconciliation_break_counts),
     }
+
+
+def get_transaction_status_breakdown(db: Session, tenant_bank_id: str) -> dict[str, Any]:
+    """Real counts per CanonicalEvent.status -- the actual final states a
+    transaction lands in (SETTLED/FAILED/PENDING/NOT_SUBMITTED, or unset).
+    Replaces the Analyst Payment Rails page's previous fully fabricated
+    multi-stage "Payment Processing Funnel" (Validated/Processed/Posted/
+    Settled -- no such intermediate pipeline stages exist anywhere in
+    this schema, only a final status per transaction). Coarser than
+    that fiction, but real.
+    """
+    rows = (
+        db.query(CanonicalEvent.status, func.count(CanonicalEvent.id))
+        .filter(CanonicalEvent.tenant_bank_id == tenant_bank_id)
+        .group_by(CanonicalEvent.status)
+        .all()
+    )
+    counts = {(status or "UNKNOWN"): count for status, count in rows}
+    return {"total_transactions": sum(counts.values()), "counts_by_status": counts}
 
 
 def get_rail_stats(
@@ -164,9 +186,10 @@ def get_rail_stats(
 
     # ReconciliationBreak has no date column of its own -- same join as
     # get_overview's reconciliation_break_counts.
+    event_lookup = CanonicalEventLookup(db, tenant_bank_id)
     break_counts_by_rail: dict[str, int] = defaultdict(int)
     for brk in db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id).all():
-        occurred = _reconciliation_break_date(db, tenant_bank_id, brk)
+        occurred = _reconciliation_break_date(event_lookup, brk)
         if date_in_range(occurred, start_date, end_date):
             break_counts_by_rail[brk.rail_type] += 1
 
@@ -233,7 +256,7 @@ def _as_utc(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def _detection_latencies(db: Session, tenant_bank_id: str) -> list[tuple[str | None, float]]:
+def _detection_latencies(db: Session, tenant_bank_id: str, lookup: CanonicalEventLookup) -> list[tuple[str | None, float]]:
     """(rail_type, latency_seconds) for every signal where a real
     transaction timestamp is resolvable: TRANSACTION-referenced
     OperationalIssue rows and all ReconciliationBreak rows (both always
@@ -245,7 +268,7 @@ def _detection_latencies(db: Session, tenant_bank_id: str) -> list[tuple[str | N
     latencies: list[tuple[str | None, float]] = []
 
     for issue in db.query(OperationalIssue).filter_by(tenant_bank_id=tenant_bank_id, reference_type="TRANSACTION").all():
-        event = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, transaction_id=issue.reference_id).first()
+        event = lookup.first_by_transaction_id(issue.reference_id)
         occurred = _parse_occurred_at(event.transaction_occurred_at) if event else None
         if occurred is None:
             continue
@@ -254,7 +277,7 @@ def _detection_latencies(db: Session, tenant_bank_id: str) -> list[tuple[str | N
             latencies.append((event.rail_type, latency))
 
     for brk in db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id).all():
-        event = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, transaction_id=brk.transaction_id).first()
+        event = lookup.by_rail_and_transaction_id(brk.rail_type, brk.transaction_id)
         occurred = _parse_occurred_at(event.transaction_occurred_at) if event else None
         if occurred is None:
             continue
@@ -290,7 +313,7 @@ def _detection_volume_by_category(db: Session, tenant_bank_id: str) -> list[dict
 
 
 def _detection_performance_by_rail(
-    db: Session, tenant_bank_id: str, latencies: list[tuple[str | None, float]],
+    db: Session, tenant_bank_id: str, latencies: list[tuple[str | None, float]], lookup: CanonicalEventLookup,
 ) -> list[dict[str, Any]]:
     """Per rail: success_rate (fraction of that rail's transactions NOT
     referenced by any OperationalIssue/ReconciliationBreak) + median
@@ -303,7 +326,7 @@ def _detection_performance_by_rail(
 
     flagged_txn_ids_by_rail: dict[str, set[str]] = defaultdict(set)
     for issue in db.query(OperationalIssue).filter_by(tenant_bank_id=tenant_bank_id, reference_type="TRANSACTION").all():
-        event = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, transaction_id=issue.reference_id).first()
+        event = lookup.first_by_transaction_id(issue.reference_id)
         if event:
             flagged_txn_ids_by_rail[event.rail_type].add(issue.reference_id)
     for brk in db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id).all():
@@ -431,16 +454,17 @@ def get_detection_performance(
 
     # Same join as get_overview's reconciliation_break_counts -- a break
     # has no date column of its own.
+    event_lookup = CanonicalEventLookup(db, tenant_bank_id)
     early_breaks = [
         b
         for b in db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id, detection_type="PROVISIONAL_VARIANCE").all()
-        if date_in_range(_reconciliation_break_date(db, tenant_bank_id, b), start_date, end_date)
+        if date_in_range(_reconciliation_break_date(event_lookup, b), start_date, end_date)
     ]
     exposure_identified_early = sum(abs(b.amount) for b in early_breaks if b.amount is not None)
 
     review = get_review_summary(db, tenant_bank_id)
     reviewed_count = review["confirmed"] + review["dismissed"]
-    latencies = _detection_latencies(db, tenant_bank_id)
+    latencies = _detection_latencies(db, tenant_bank_id, event_lookup)
 
     return {
         "coverage_rate": (covered_transactions / total_transactions) if total_transactions else None,
@@ -457,7 +481,7 @@ def get_detection_performance(
         "dismissed_count": review["dismissed"],
         "median_detection_time_seconds": statistics.median([lat for _, lat in latencies]) if latencies else None,
         "detection_volume_by_category": _detection_volume_by_category(db, tenant_bank_id),
-        "detection_performance_by_rail": _detection_performance_by_rail(db, tenant_bank_id, latencies),
+        "detection_performance_by_rail": _detection_performance_by_rail(db, tenant_bank_id, latencies, event_lookup),
         "new_patterns_detected": _new_patterns_detected(db, tenant_bank_id),
         "quality_trend": get_review_quality_trend(db, tenant_bank_id),
         "pattern_mix": get_pattern_mix(db, tenant_bank_id),
@@ -493,15 +517,16 @@ def get_priority_distribution(
         elif band == "Low-Medium":
             counts["medium"] += 1
 
+    event_lookup = CanonicalEventLookup(db, tenant_bank_id)
     issue_priorities = priority_levels_for_issues(db, tenant_bank_id)
     for issue in db.query(OperationalIssue).filter_by(tenant_bank_id=tenant_bank_id).all():
-        occurred = _operational_issue_date(db, tenant_bank_id, issue)
+        occurred = _operational_issue_date(event_lookup, issue)
         if date_in_range(occurred, start_date, end_date):
             counts[issue_priorities[issue.id]["priority_level"].lower()] += 1
 
     break_priorities = priority_levels_for_breaks(db, tenant_bank_id)
     for brk in db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id).all():
-        occurred = _reconciliation_break_date(db, tenant_bank_id, brk)
+        occurred = _reconciliation_break_date(event_lookup, brk)
         if date_in_range(occurred, start_date, end_date):
             counts[break_priorities[brk.id]["priority_level"].lower()] += 1
 

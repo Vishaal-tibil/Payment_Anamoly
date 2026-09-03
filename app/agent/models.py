@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, String, UniqueConstraint
+from sqlalchemy import JSON, Column, DateTime, String, UniqueConstraint
 
 from ..database import Base
 
@@ -31,8 +31,19 @@ class AgentNarrative(Base):
 
     title = Column(String, nullable=False)
     description = Column(String, nullable=False)
+    # Kept for existing single-action UIs (IncidentCard, PriorityFocusCard,
+    # AnomalyListItem) -- always the first/primary entry of
+    # recommended_actions below, so those callers see no schema change.
     recommended_action_title = Column(String, nullable=False)
     recommended_action_description = Column(String, nullable=False)
+    # 1-3 ranked {title, description, why} dicts -- the full list behind
+    # recommended_action_title/description above. "why" is grounded in
+    # the same real facts every other field here is, never a fabricated
+    # dollar/percentage projection (see narration.py's SYSTEM_PROMPT).
+    # Nullable only so narratives cached before this column existed don't
+    # break on read -- every narrative generated from here on always sets
+    # it (get_or_create_narrative never writes one without it).
+    recommended_actions = Column(JSON, nullable=True)
 
     model = Column(String, nullable=False)  # which Mistral model produced this, for auditability
     generated_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)

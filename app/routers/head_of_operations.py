@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..dashboard import get_anomaly_detection_categories, get_senior_overview
 from ..database import get_db
+from ..incident_impact import get_incident_enterprise_impact
 from ..health.models import PaymentHealthScore
 from ..health.scoring import get_health_history
 from ..review.models import STATUSES as REVIEW_STATUSES
@@ -124,6 +125,22 @@ async def get_review_summary_endpoint(tenant_bank_id: str, db: Session = Depends
 @router.get("/dashboard/anomaly-detection-categories")
 async def dashboard_anomaly_detection_categories():
     return get_anomaly_detection_categories()
+
+
+@router.get("/incidents/enterprise-impact")
+async def incident_enterprise_impact(
+    tenant_bank_id: str, signal_type: str, signal_id: int, db: Session = Depends(get_db),
+):
+    """Real cross-referenced "Enterprise Impact" for one incident (Incident
+    Details page) -- see app/incident_impact.py's docstring for exactly
+    which of the original 6 rows are real vs. honestly never returned
+    (chargeback rate / dispute resolution time have no concept anywhere
+    in this schema).
+    """
+    result = get_incident_enterprise_impact(db, tenant_bank_id, signal_type, signal_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"No {signal_type} row with id={signal_id} for this tenant")
+    return result
 
 
 @router.get("/dashboard/senior-overview")

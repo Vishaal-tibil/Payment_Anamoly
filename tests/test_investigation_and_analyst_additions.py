@@ -9,6 +9,7 @@ from app.anomaly.models import EntitySnapshot
 from app.dashboard import get_detection_attention, get_priority_distribution
 from app.database import SessionLocal
 from app.exposure import get_anomaly_heatmap, get_exposure_by_rail
+from app.agent.models import AgentNarrative
 from app.investigation.cases import compute_cases, get_anomaly_type_counts
 from app.investigation.models import InvestigationCase, InvestigationCaseAlert
 from app.main import app
@@ -78,6 +79,34 @@ def test_compute_cases_is_idempotent_rebuild(db_session):
     compute_cases(db_session, tenant_bank_id="KEYBANK")
 
     assert db_session.query(InvestigationCase).filter_by(tenant_bank_id="KEYBANK").count() == 1
+
+
+def test_compute_cases_purges_stale_investigation_case_narratives(db_session):
+    """A rebuild reassigns both case.id (autoincrement) and case_code
+    (fresh uuid4()) -- any AgentNarrative cached under the OLD id would
+    otherwise get silently served against whatever unrelated case
+    inherits that same numeric id next. Confirmed live: a stale
+    "CNO-36F8D5" narrative rendered on a since-renumbered case that was
+    actually a different one entirely.
+    """
+    _event(db_session, transaction_id="TXN-1", rail_type="ACH")
+    db_session.add(ReconciliationBreak(id=1, tenant_bank_id="KEYBANK", transaction_id="TXN-1", rail_type="ACH", detection_type="CONFIRMED_BREAK", amount=500.0))
+    db_session.commit()
+    compute_cases(db_session, tenant_bank_id="KEYBANK")
+    first_case_id = db_session.query(InvestigationCase).filter_by(tenant_bank_id="KEYBANK").one().id
+
+    db_session.add(AgentNarrative(
+        id=f"investigation_case:KEYBANK:{first_case_id}", signal_type="investigation_case",
+        reference_id=str(first_case_id), tenant_bank_id="KEYBANK",
+        title="Stale title", description="Stale description",
+        recommended_action_title="Stale action", recommended_action_description="Stale.",
+        model="mistral-test",
+    ))
+    db_session.commit()
+
+    compute_cases(db_session, tenant_bank_id="KEYBANK")  # rebuild -- ids/case_codes reassigned
+
+    assert db_session.query(AgentNarrative).filter_by(signal_type="investigation_case", tenant_bank_id="KEYBANK").count() == 0
 
 
 def test_compute_cases_severity_sourced_from_priority_module(db_session):
@@ -202,6 +231,24 @@ def test_investigation_cases_priority_level_filter(client):
     cases = resp.json()["cases"]
     assert all(c["priority_level"] == "Critical" for c in cases)
     assert any(c["case_code"] == "CNO-CRIT01" for c in cases)
+
+
+def test_investigation_cases_date_filter_uses_real_anchor(client):
+    """No alerts seeded for either case -> resolve_real_case_anchor falls
+    back to opened_at (documented behavior, see sla.py) -- a real,
+    meaningful date filter, not the previous no-op (start_date/end_date
+    were silently ignored before this endpoint accepted them at all).
+    """
+    _seed_case("CNO-DATEOLD01", opened_at=datetime(2020, 1, 1, tzinfo=timezone.utc))
+    _seed_case("CNO-DATENEW01", opened_at=datetime.now(timezone.utc))
+
+    resp = client.get("/investigation/cases", params={
+        "tenant_bank_id": _TENANT, "start_date": "2020-01-01", "end_date": "2020-01-02",
+    })
+    assert resp.status_code == 200
+    codes = {c["case_code"] for c in resp.json()["cases"]}
+    assert "CNO-DATEOLD01" in codes
+    assert "CNO-DATENEW01" not in codes
 
 
 # -- app/dashboard.py: get_priority_distribution reconciled with priority.py --

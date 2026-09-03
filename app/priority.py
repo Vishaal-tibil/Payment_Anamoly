@@ -22,7 +22,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from .models import CanonicalEvent
+from .canonical_event_lookup import CanonicalEventLookup
 from .operations.models import OperationalIssue
 from .reconciliation.models import ReconciliationBreak
 
@@ -34,9 +34,12 @@ PRIORITY_LEVELS = (CRITICAL, HIGH, MEDIUM, LOW)
 
 # Documented v1 cutoffs, same "revisit later, not final" status as
 # anomaly_band's / health_band's own cutoffs elsewhere in this codebase.
-_CRITICAL_MIN = 85.0
-_HIGH_MIN = 60.0
-_MEDIUM_MIN = 35.0
+# Public (no leading underscore) -- app/investigation/cases.py quotes
+# these same real cutoffs in its "why prioritized" explanation, rather
+# than duplicating the numbers.
+CRITICAL_MIN = 85.0
+HIGH_MIN = 60.0
+MEDIUM_MIN = 35.0
 
 _AMOUNT_BASED_ISSUE_TYPES = ("DUPLICATE_PAYMENT", "FORMAT_REJECTION")
 _SCORED_ISSUE_TYPES = ("FORMAT_REJECTION_SPIKE", "NETWORK_TIMEOUT_SPIKE")
@@ -50,11 +53,11 @@ _CONFIRMED_BREAK_SCORE_FLOOR = 50.0
 
 
 def _band_for_score(score: float) -> str:
-    if score >= _CRITICAL_MIN:
+    if score >= CRITICAL_MIN:
         return CRITICAL
-    if score >= _HIGH_MIN:
+    if score >= HIGH_MIN:
         return HIGH
-    if score >= _MEDIUM_MIN:
+    if score >= MEDIUM_MIN:
         return MEDIUM
     return LOW
 
@@ -79,11 +82,15 @@ def priority_levels_for_issues(db: Session, tenant_bank_id: str) -> dict[int, di
     issues = db.query(OperationalIssue).filter_by(tenant_bank_id=tenant_bank_id).all()
 
     # Real dollar amount per amount-based issue, via the same reference_id
-    # join app/exposure.py already uses -- not a new join pattern.
+    # join app/exposure.py already uses -- not a new join pattern. Batched
+    # via CanonicalEventLookup (one query total) rather than one query per
+    # issue row -- confirmed via direct latency measurement to be the
+    # dominant real cost behind slow page loads.
+    event_lookup = CanonicalEventLookup(db, tenant_bank_id)
     amount_by_issue_id: dict[int, float] = {}
     for issue in issues:
         if issue.issue_type in _AMOUNT_BASED_ISSUE_TYPES:
-            event = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, transaction_id=issue.reference_id).first()
+            event = event_lookup.first_by_transaction_id(issue.reference_id)
             if event and event.amount is not None:
                 amount_by_issue_id[issue.id] = abs(event.amount)
 

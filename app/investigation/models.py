@@ -45,6 +45,11 @@ class InvestigationCase(Base):
     # peer-relative severity_score of its own in this same 0-100 scale.
     severity_score = Column(Float, nullable=True)
     priority_level = Column(String, nullable=True)  # "Critical" | "High" | "Medium" | "Low"
+    # Plain-language "why" behind severity_score/priority_level above --
+    # see app/investigation/cases.py's _priority_reason(). None only when
+    # severity_score/priority_level are also None (no scored alert in the
+    # cluster to point to).
+    priority_reason = Column(String, nullable=True)
 
     # Display-only -- see module docstring. PENDING | VALID | INVALID.
     validation_status = Column(String, nullable=False, default="PENDING")

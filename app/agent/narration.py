@@ -11,12 +11,15 @@ sounding recommendation.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from ..anomaly.models import BeneficiarySnapshot, EntitySnapshot
+from ..investigation.models import InvestigationCase, InvestigationCaseAlert
+from ..investigation.trend import category_weekly_trend
 from ..operations.models import OperationalIssue
 from ..reconciliation.models import ReconciliationBreak
 from .client import MODEL, get_client
@@ -24,20 +27,25 @@ from .models import AgentNarrative
 
 SYSTEM_PROMPT = """You are a payment-operations analyst assistant for a bank's internal \
 fraud/operations dashboard. You will be given a JSON object of REAL, already-computed \
-facts about one detected issue (a fraud/anomaly signal, an operational issue, or a \
-reconciliation break) produced by deterministic detection code -- not by you.
+facts about one detected issue (a fraud/anomaly signal, an operational issue, a \
+reconciliation break, or an investigation case -- a cluster of several such signals \
+grouped together) produced by deterministic detection code -- not by you.
 
 Your job: write a short, professional narrative someone reviewing this dashboard would \
-read in seconds -- a clear title, a one-to-two sentence description, and a recommended \
-next action.
+read in seconds -- a clear title, a one-to-two sentence description, and 1-3 ranked \
+recommended actions.
 
 Hard rules, in order of importance:
 1. Use ONLY the facts given to you. Never invent a dollar amount, percentage, date, \
 transaction id, or any other specific number that is not present in the input.
-2. Every identifier in the input (party_id, transaction_id, reference_id, or similar) \
-MUST appear in your title or description reproduced EXACTLY, character for character -- \
-copy it, never abbreviate, shorten, or "clean up" any part of it. "MER-20A71A0D" must \
-stay "MER-20A71A0D", never "MER-20A71A" or any other truncated/reformatted version.
+2. Every identifier in the input (party_id, transaction_id, reference_id, case_code, or \
+similar) MUST appear in your title or description reproduced EXACTLY, character for \
+character -- copy it, never abbreviate, shorten, or "clean up" any part of it. \
+"MER-20A71A0D" must stay "MER-20A71A0D", never "MER-20A71A" or any other truncated/ \
+reformatted version. Exception: for an investigation case, only the case's own \
+"case_code" must be reproduced this way -- the individual alerts listed under "alerts" \
+are supporting detail to summarize (their shared category, rail, count), not each one's \
+transaction_id individually.
 3. Every specific number given to you (amount_total, variance_amount, transaction_count, \
 a date, etc.) MUST be stated as its actual value somewhere in your output if you \
 reference it at all. Never write vague filler in place of a real number you were given \
@@ -52,13 +60,32 @@ a cause.
 that ("insufficient detail to recommend a specific action -- review manually") rather \
 than inventing generic-sounding advice with fabricated specifics.
 6. Never state a resolution timeframe, success probability, or recovered-amount \
-estimate unless it is directly computable from the given input.
+estimate unless it is directly computable from the given input. This applies to each \
+recommended action's "why" too: it may only cite a real amount/count/percentage that is \
+literally present in the input facts -- never a projected/future estimate ("could \
+prevent $X over the next hour", "would protect an estimated Y%") unless that exact \
+projected value is itself already present in the input.
+7. Recommend as many distinct actions as the facts genuinely support, from 1 to 3, \
+ranked most-important first -- never pad to 3 with a redundant or generic filler action \
+just to fill the list. A single simple signal (one operational issue, one reconciliation \
+break, one fraud/funnel snapshot) usually only supports one real action. An investigation \
+case (a cluster of several alerts) may support up to 3 if the facts clearly justify \
+distinct next steps; if they don't, give fewer.
+8. An investigation case's facts may include a "category_trend" object (real tenant-wide \
+weekly counts of this same category/rail, not just this one case's own alerts) -- if it is \
+present, you may reference its "direction" ("increasing"/"decreasing"/"stable"), \
+"latest_week_count", and "prior_weeks_average_count" verbatim, since those are real \
+computed numbers. If "category_trend" is null/absent, do not mention a trend, rate of \
+change, or week-over-week comparison at all -- there is no real data behind one.
 
 Respond with a JSON object with exactly these keys: "title" (string, 60 characters or \
-fewer), "description" (string, 1-2 sentences), "recommended_action_title" (string, 8 \
-words or fewer), "recommended_action_description" (string, 1 sentence)."""
+fewer), "description" (string, 1-2 sentences), "recommended_actions" (array of 1 to 3 \
+objects, ranked most-important first, each with "title" (string, 8 words or fewer), \
+"description" (string, 1 sentence), and "why" (string, 1 sentence grounded only in the \
+given facts per rule 6 above)."""
 
-_REQUIRED_KEYS = {"title", "description", "recommended_action_title", "recommended_action_description"}
+_REQUIRED_KEYS = {"title", "description", "recommended_actions"}
+_REQUIRED_ACTION_KEYS = {"title", "description", "why"}
 
 # Which fact is this signal type's real-world identifier -- the thing a
 # human would actually go look up afterward, so getting it wrong (or
@@ -68,6 +95,7 @@ _IDENTIFIER_FACT_KEY = {
     "reconciliation_break": "transaction_id",
     "fraud_anomaly": "party_id",
     "funnel_account": "beneficiary_key",
+    "investigation_case": "case_code",
 }
 
 
@@ -130,13 +158,72 @@ def facts_for_beneficiary_snapshot(snapshot: BeneficiarySnapshot) -> dict[str, A
     }
 
 
+def facts_for_investigation_case(db: Session, case: InvestigationCase, alerts: list[InvestigationCaseAlert]) -> dict[str, Any]:
+    return {
+        "signal_type": "investigation_case",
+        "case_code": case.case_code,
+        "category": case.category,
+        "payment_rail": case.payment_rail,
+        "current_exposure": case.current_exposure,
+        "transactions_affected": case.transactions_affected,
+        "contributing_alerts_count": case.contributing_alerts_count,
+        "opened_at": case.opened_at.isoformat() if case.opened_at else None,
+        "alerts": [
+            {
+                "anomaly_type": a.anomaly_type,
+                "anomaly_category": a.anomaly_category,
+                "payment_rail": a.payment_rail,
+                "detected_at": a.detected_at.isoformat() if a.detected_at else None,
+            }
+            for a in alerts
+        ],
+        # Real tenant-wide weekly count for this same (category,
+        # payment_rail), by each alert's real underlying event time --
+        # never this case's own detected_at (a batch-compute-run
+        # timestamp, not a real event time). None when there isn't 2+
+        # real weeks of history to compare -- see trend.py's docstring.
+        "category_trend": category_weekly_trend(db, case.tenant_bank_id, case.category, case.payment_rail),
+    }
+
+
+# Confirmed by directly hammering /agent/narrate with 5 back-to-back real
+# calls: 3 succeeded, 2 failed with the IDENTICAL "403 tier_not_allowed /
+# This model is not available in your subscription tier" error. A real
+# subscription restriction would fail every call, not 2 of 5 -- this is
+# the shared/free-tier API key's burst rate limit, mis-worded by Mistral
+# as a tier error instead of a 429. Retrying after a short pause is
+# empirically the fix, not an account/billing change.
+_MAX_ATTEMPTS = 3
+_RETRY_DELAY_SECONDS = 3.0
+
+
+async def _complete_with_retry(client, facts: dict[str, Any]):
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            return await client.chat.complete_async(
+                model=MODEL,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": json.dumps(facts)},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,  # low -- this summarizes given facts, it doesn't creatively write
+            )
+        except Exception as exc:  # transient rate-limit-shaped API error -- see comment above
+            last_exc = exc
+            if attempt < _MAX_ATTEMPTS - 1:
+                await asyncio.sleep(_RETRY_DELAY_SECONDS * (attempt + 1))
+    raise last_exc
+
+
 async def narrate(facts: dict[str, Any]) -> dict[str, Any]:
     """Calls Mistral to generate a narrative grounded strictly in
-    `facts`. Raises on an API error, a malformed/incomplete response,
-    or a failed grounding check -- callers should treat a raised
-    exception as "narration unavailable right now" and fall back to
-    the plain-facts display, never show a broken or ungrounded
-    narrative.
+    `facts`. Raises on an API error persisting across all retries, a
+    malformed/incomplete response, or a failed grounding check --
+    callers should treat a raised exception as "narration unavailable
+    right now" and fall back to the plain-facts display, never show a
+    broken or ungrounded narrative.
 
     Async, not sync -- confirmed against real Meridian data before
     writing this the sync way that a single call can take on the order
@@ -147,15 +234,7 @@ async def narrate(facts: dict[str, Any]) -> dict[str, Any]:
     not a manual thread-pool workaround) avoids that.
     """
     client = get_client()
-    response = await client.chat.complete_async(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": json.dumps(facts)},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.2,  # low -- this summarizes given facts, it doesn't creatively write
-    )
+    response = await _complete_with_retry(client, facts)
     content = response.choices[0].message.content
     parsed = json.loads(content)
 
@@ -163,11 +242,19 @@ async def narrate(facts: dict[str, Any]) -> dict[str, Any]:
     if missing:
         raise ValueError(f"Mistral response missing required keys: {sorted(missing)}")
 
+    actions = parsed["recommended_actions"]
+    if not isinstance(actions, list) or not (1 <= len(actions) <= 3):
+        raise ValueError(f"recommended_actions must be a list of 1-3 items, got: {actions!r}")
+    for action in actions:
+        if not isinstance(action, dict) or (_REQUIRED_ACTION_KEYS - action.keys()):
+            raise ValueError(f"each recommended_actions item must have {sorted(_REQUIRED_ACTION_KEYS)}, got: {action!r}")
+
     result = {
         "title": parsed["title"],
         "description": parsed["description"],
-        "recommended_action_title": parsed["recommended_action_title"],
-        "recommended_action_description": parsed["recommended_action_description"],
+        "recommended_actions": [
+            {"title": a["title"], "description": a["description"], "why": a["why"]} for a in actions
+        ],
     }
 
     # Confirmed against real Meridian data that the prompt alone isn't
@@ -209,12 +296,14 @@ async def get_or_create_narrative(
         return existing
 
     result = await narrate(facts)
+    primary = result["recommended_actions"][0]
 
     if existing:
         existing.title = result["title"]
         existing.description = result["description"]
-        existing.recommended_action_title = result["recommended_action_title"]
-        existing.recommended_action_description = result["recommended_action_description"]
+        existing.recommended_action_title = primary["title"]
+        existing.recommended_action_description = primary["description"]
+        existing.recommended_actions = result["recommended_actions"]
         existing.model = MODEL
         db.commit()
         return existing
@@ -226,8 +315,9 @@ async def get_or_create_narrative(
         tenant_bank_id=tenant_bank_id,
         title=result["title"],
         description=result["description"],
-        recommended_action_title=result["recommended_action_title"],
-        recommended_action_description=result["recommended_action_description"],
+        recommended_action_title=primary["title"],
+        recommended_action_description=primary["description"],
+        recommended_actions=result["recommended_actions"],
         model=MODEL,
     )
     db.add(narrative)

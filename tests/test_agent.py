@@ -10,12 +10,14 @@ import pytest
 from app.agent.models import AgentNarrative
 from app.agent.narration import (
     facts_for_entity_snapshot,
+    facts_for_investigation_case,
     facts_for_operational_issue,
     facts_for_reconciliation_break,
     get_or_create_narrative,
     narrate,
 )
 from app.anomaly.models import EntitySnapshot
+from app.investigation.models import InvestigationCase, InvestigationCaseAlert
 from app.operations.models import OperationalIssue
 from app.reconciliation.models import ReconciliationBreak
 
@@ -26,11 +28,11 @@ def _mock_mistral_response(payload: dict) -> MagicMock:
     return response
 
 
+_VALID_ACTION = {"title": "Review batch", "description": "Check the batch manually.", "why": "It is overdue."}
 _VALID_PAYLOAD = {
     "title": "Batch overdue",
     "description": "This batch has not settled.",
-    "recommended_action_title": "Review batch",
-    "recommended_action_description": "Check the batch manually.",
+    "recommended_actions": [_VALID_ACTION],
 }
 
 
@@ -78,6 +80,57 @@ def test_facts_for_entity_snapshot():
     assert facts["cluster_changed"] is True
 
 
+def test_facts_for_investigation_case_summarizes_alerts_without_per_alert_ids(db_session):
+    case = InvestigationCase(
+        id=1, case_code="CNO-ABC123", tenant_bank_id="KEYBANK", category="CONFIRMED_BREAK",
+        payment_rail="CHEQUE", title="CHEQUE Confirmed reconciliation break Cluster",
+        current_exposure=78.08, transactions_affected=6, contributing_alerts_count=6,
+        validation_status="PENDING", opened_at=datetime(2026, 8, 27, tzinfo=timezone.utc),
+    )
+    alerts = [
+        InvestigationCaseAlert(
+            id=i, case_id=1, tenant_bank_id="KEYBANK", alert_code=f"ALT-{i}",
+            source_type="RECONCILIATION_BREAK", source_id=i, transaction_id=f"CHK-MTB-10000{i}",
+            payment_rail="CHEQUE", anomaly_category="Reconciliation", anomaly_type="Confirmed reconciliation break",
+            description=f"Confirmed reconciliation break on transaction CHK-MTB-10000{i} (CHEQUE)",
+            detected_at=datetime(2026, 8, 27, tzinfo=timezone.utc),
+        )
+        for i in range(1, 4)
+    ]
+
+    facts = facts_for_investigation_case(db_session, case, alerts)
+
+    assert facts["signal_type"] == "investigation_case"
+    assert facts["case_code"] == "CNO-ABC123"
+    assert facts["current_exposure"] == 78.08
+    assert facts["contributing_alerts_count"] == 6
+    assert len(facts["alerts"]) == 3
+    # Per-alert facts summarize type/category/rail, not individual transaction_ids --
+    # the prompt explicitly doesn't require reproducing every alert's identifier.
+    assert "transaction_id" not in facts["alerts"][0]
+    assert facts["alerts"][0]["anomaly_type"] == "Confirmed reconciliation break"
+    # No ReconciliationBreak/CanonicalEvent rows seeded in db_session for this
+    # (category, rail) -- honestly None, not a fabricated trend.
+    assert facts["category_trend"] is None
+
+
+@patch("app.agent.narration.get_client")
+def test_narrate_passes_when_case_code_present_verbatim(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.chat.complete_async = AsyncMock(return_value=_mock_mistral_response({
+        "title": "Case CNO-ABC123: reconciliation break cluster",
+        "description": "Case CNO-ABC123 clusters 6 confirmed reconciliation breaks on CHEQUE.",
+        "recommended_actions": [
+            {"title": "Review cheque breaks", "description": "Review the clustered cheque transactions for a common cause.", "why": "6 confirmed breaks share this cause."},
+        ],
+    }))
+    mock_get_client.return_value = mock_client
+
+    result = asyncio.run(narrate({"signal_type": "investigation_case", "case_code": "CNO-ABC123"}))
+
+    assert "CNO-ABC123" in result["title"]
+
+
 # narrate()/get_or_create_narrative() are async (a real Mistral call from
 # this environment was observed taking on the order of minutes -- calling
 # it synchronously inside main.py's `async def` endpoint would block the
@@ -95,11 +148,49 @@ def test_narrate_returns_parsed_fields_on_valid_response(mock_get_client):
     result = asyncio.run(narrate({"signal_type": "operational_issue"}))
 
     assert result["title"] == "Batch overdue"
-    assert result["recommended_action_title"] == "Review batch"
+    assert result["recommended_actions"] == [_VALID_ACTION]
     mock_client.chat.complete_async.assert_awaited_once()
     call_kwargs = mock_client.chat.complete_async.call_args.kwargs
     assert call_kwargs["response_format"] == {"type": "json_object"}
     assert call_kwargs["messages"][0]["role"] == "system"
+
+
+# Retry-on-transient-API-error tests -- confirmed live that identical
+# /agent/narrate calls sometimes fail with "403 tier_not_allowed" and
+# sometimes succeed seconds apart (3 of 5 back-to-back real calls
+# succeeded), meaning it's the API key's rate limit, not a real
+# subscription restriction. asyncio.sleep is patched so these don't
+# actually wait out the real backoff delay.
+
+@patch("app.agent.narration.asyncio.sleep", new_callable=AsyncMock)
+@patch("app.agent.narration.get_client")
+def test_narrate_retries_then_succeeds_on_transient_error(mock_get_client, mock_sleep):
+    mock_client = MagicMock()
+    mock_client.chat.complete_async = AsyncMock(side_effect=[
+        Exception("403 tier_not_allowed"),
+        Exception("403 tier_not_allowed"),
+        _mock_mistral_response(_VALID_PAYLOAD),
+    ])
+    mock_get_client.return_value = mock_client
+
+    result = asyncio.run(narrate({"signal_type": "operational_issue"}))
+
+    assert result["title"] == "Batch overdue"
+    assert mock_client.chat.complete_async.await_count == 3
+    assert mock_sleep.await_count == 2  # slept between attempt 1->2 and 2->3, not after the final success
+
+
+@patch("app.agent.narration.asyncio.sleep", new_callable=AsyncMock)
+@patch("app.agent.narration.get_client")
+def test_narrate_raises_after_exhausting_all_retries(mock_get_client, mock_sleep):
+    mock_client = MagicMock()
+    mock_client.chat.complete_async = AsyncMock(side_effect=Exception("403 tier_not_allowed"))
+    mock_get_client.return_value = mock_client
+
+    with pytest.raises(Exception, match="tier_not_allowed"):
+        asyncio.run(narrate({"signal_type": "operational_issue"}))
+
+    assert mock_client.chat.complete_async.await_count == 3  # _MAX_ATTEMPTS, no more
 
 
 @patch("app.agent.narration.get_client")
@@ -110,6 +201,62 @@ def test_narrate_raises_on_missing_required_keys(mock_get_client):
 
     with pytest.raises(ValueError, match="missing required keys"):
         asyncio.run(narrate({"signal_type": "operational_issue"}))
+
+
+@patch("app.agent.narration.get_client")
+def test_narrate_raises_when_recommended_actions_not_a_list(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.chat.complete_async = AsyncMock(return_value=_mock_mistral_response({
+        "title": "T", "description": "D", "recommended_actions": "not a list",
+    }))
+    mock_get_client.return_value = mock_client
+
+    with pytest.raises(ValueError, match="recommended_actions must be a list"):
+        asyncio.run(narrate({"signal_type": "operational_issue"}))
+
+
+@patch("app.agent.narration.get_client")
+def test_narrate_raises_when_recommended_actions_exceeds_three(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.chat.complete_async = AsyncMock(return_value=_mock_mistral_response({
+        "title": "T", "description": "D", "recommended_actions": [_VALID_ACTION] * 4,
+    }))
+    mock_get_client.return_value = mock_client
+
+    with pytest.raises(ValueError, match="recommended_actions must be a list of 1-3"):
+        asyncio.run(narrate({"signal_type": "operational_issue"}))
+
+
+@patch("app.agent.narration.get_client")
+def test_narrate_raises_when_action_missing_why(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.chat.complete_async = AsyncMock(return_value=_mock_mistral_response({
+        "title": "T", "description": "D",
+        "recommended_actions": [{"title": "Review", "description": "Review it."}],
+    }))
+    mock_get_client.return_value = mock_client
+
+    with pytest.raises(ValueError, match="must have"):
+        asyncio.run(narrate({"signal_type": "operational_issue"}))
+
+
+@patch("app.agent.narration.get_client")
+def test_narrate_accepts_three_ranked_actions(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.chat.complete_async = AsyncMock(return_value=_mock_mistral_response({
+        "title": "T", "description": "D",
+        "recommended_actions": [
+            {"title": "First", "description": "Do first.", "why": "Most urgent."},
+            {"title": "Second", "description": "Do second.", "why": "Also real."},
+            {"title": "Third", "description": "Do third.", "why": "Still grounded."},
+        ],
+    }))
+    mock_get_client.return_value = mock_client
+
+    result = asyncio.run(narrate({"signal_type": "investigation_case"}))
+
+    assert len(result["recommended_actions"]) == 3
+    assert result["recommended_actions"][0]["title"] == "First"
 
 
 # Grounding check regression tests -- a real live call against real data
@@ -124,8 +271,9 @@ def test_narrate_passes_when_identifier_present_verbatim(mock_get_client):
     mock_client.chat.complete_async = AsyncMock(return_value=_mock_mistral_response({
         "title": "High anomaly for merchant MER-20A71A0D",
         "description": "Merchant MER-20A71A0D triggered a high anomaly score.",
-        "recommended_action_title": "Review merchant",
-        "recommended_action_description": "Review the merchant's recent activity.",
+        "recommended_actions": [
+            {"title": "Review merchant", "description": "Review the merchant's recent activity.", "why": "Score is high."},
+        ],
     }))
     mock_get_client.return_value = mock_client
 
@@ -141,8 +289,9 @@ def test_narrate_raises_when_identifier_truncated(mock_get_client):
     mock_client.chat.complete_async = AsyncMock(return_value=_mock_mistral_response({
         "title": "High Anomaly in Merchant MER-20A71A Transactions",
         "description": "Four transactions totaling the given amount for merchant MER-20A71A triggered a high anomaly score in the specified time window.",
-        "recommended_action_title": "Review merchant transactions urgently",
-        "recommended_action_description": "Examine the four flagged transactions for potential fraud.",
+        "recommended_actions": [
+            {"title": "Review merchant transactions urgently", "description": "Examine the four flagged transactions for potential fraud.", "why": "High anomaly score."},
+        ],
     }))
     mock_get_client.return_value = mock_client
 
@@ -156,8 +305,9 @@ def test_narrate_raises_when_identifier_missing_entirely(mock_get_client):
     mock_client.chat.complete_async = AsyncMock(return_value=_mock_mistral_response({
         "title": "Reconciliation break detected",
         "description": "A transaction failed to reconcile.",
-        "recommended_action_title": "Investigate",
-        "recommended_action_description": "Review the ledger entries.",
+        "recommended_actions": [
+            {"title": "Investigate", "description": "Review the ledger entries.", "why": "A break was detected."},
+        ],
     }))
     mock_get_client.return_value = mock_client
 
@@ -180,10 +330,7 @@ def test_narrate_skips_grounding_check_when_no_identifier_in_facts(mock_get_clie
 
 @patch("app.agent.narration.narrate", new_callable=AsyncMock)
 def test_get_or_create_narrative_calls_narrate_once_then_caches(mock_narrate, db_session):
-    mock_narrate.return_value = {
-        "title": "T", "description": "D",
-        "recommended_action_title": "A", "recommended_action_description": "AD",
-    }
+    mock_narrate.return_value = {"title": "T", "description": "D", "recommended_actions": [_VALID_ACTION]}
 
     async def run():
         first = await get_or_create_narrative(db_session, "operational_issue", "42", "KEYBANK", {"x": 1})
@@ -194,14 +341,16 @@ def test_get_or_create_narrative_calls_narrate_once_then_caches(mock_narrate, db
 
     assert mock_narrate.await_count == 1  # second call hit the cache, no new API call
     assert first.id == second.id == "operational_issue:KEYBANK:42"
+    assert first.recommended_actions == [_VALID_ACTION]
+    assert first.recommended_action_title == _VALID_ACTION["title"]
     assert db_session.query(AgentNarrative).count() == 1
 
 
 @patch("app.agent.narration.narrate", new_callable=AsyncMock)
 def test_get_or_create_narrative_force_regenerates(mock_narrate, db_session):
     mock_narrate.side_effect = [
-        {"title": "First", "description": "D", "recommended_action_title": "A", "recommended_action_description": "AD"},
-        {"title": "Second", "description": "D2", "recommended_action_title": "A2", "recommended_action_description": "AD2"},
+        {"title": "First", "description": "D", "recommended_actions": [{"title": "A", "description": "AD", "why": "W"}]},
+        {"title": "Second", "description": "D2", "recommended_actions": [{"title": "A2", "description": "AD2", "why": "W2"}]},
     ]
 
     async def run():
@@ -215,15 +364,13 @@ def test_get_or_create_narrative_force_regenerates(mock_narrate, db_session):
     assert first_title == "First"
     assert mock_narrate.await_count == 2
     assert second.title == "Second"
+    assert second.recommended_actions == [{"title": "A2", "description": "AD2", "why": "W2"}]
     assert db_session.query(AgentNarrative).count() == 1  # updated in place, not duplicated
 
 
 @patch("app.agent.narration.narrate", new_callable=AsyncMock)
 def test_get_or_create_narrative_tenant_isolation_in_cache_key(mock_narrate, db_session):
-    mock_narrate.return_value = {
-        "title": "T", "description": "D",
-        "recommended_action_title": "A", "recommended_action_description": "AD",
-    }
+    mock_narrate.return_value = {"title": "T", "description": "D", "recommended_actions": [_VALID_ACTION]}
 
     async def run():
         await get_or_create_narrative(db_session, "operational_issue", "42", "KEYBANK", {"x": 1})
