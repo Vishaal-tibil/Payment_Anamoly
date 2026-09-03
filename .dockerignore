@@ -1,0 +1,25 @@
+# Keep the build context small and secrets out of the image.
+
+# Secrets -- MISTRAL_API_KEY is supplied at runtime, never baked in.
+.env
+
+# The committed demo database is ~15MB and must NOT be copied into the
+# image: the container reads its database from the /data volume instead
+# (see Dockerfile). Seed it explicitly on first deploy -- README covers it.
+data/
+
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+tests/
+.git/
+.gitignore
+.claude/
+docs/
+*.md
+Dockerfile
+.dockerignore
+docker-compose.yml
+node_modules/
+package-lock.json

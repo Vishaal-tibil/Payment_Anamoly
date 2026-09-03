@@ -10,6 +10,26 @@
     }
   },
   "paths": {
+    "/healthz": {
+      "get": {
+        "tags": [
+          "Ops"
+        ],
+        "summary": "Healthz",
+        "description": "Liveness probe for the container/load balancer. Deliberately does\nno database work: it answers \"is this process serving?\", which is what\na restart policy should act on. A database problem should surface as a\nreal 500 from a real endpoint, not silently cycle the container.",
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/anomaly/snapshots": {
       "get": {
         "tags": [

@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import models  # noqa: F401  -- registers tables on Base.metadata
+from .config import CORS_ALLOW_ORIGIN_REGEX, CORS_ALLOW_ORIGINS
 from .agent import models as agent_models  # noqa: F401  -- registers agent_narratives
 from .anomaly import models as anomaly_models  # noqa: F401  -- registers anomaly_entity_snapshots
 from .database import Base, SessionLocal, engine
@@ -42,17 +43,32 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Merchant Payment Intelligence Platform", lifespan=lifespan)
 
-# Local-dev frontend (Vite) origins. Regex (not a fixed port list)
-# because Vite auto-increments past 5173 whenever that port's already
-# taken -- still scoped to localhost only. Pilot system, no auth yet --
-# tighten this to a real allowlist before any non-local deployment.
+# Local dev defaults to a localhost regex (Vite auto-increments past 5173
+# whenever that port's taken). A hosted deployment sets CORS_ALLOW_ORIGINS
+# to an explicit comma-separated allowlist -- e.g. the Firebase Hosting
+# domain -- and then localhost is NOT included. See app/config.py.
+#
+# Still no auth (pilot system): CORS restricts which browser origins may
+# call this API, it does not authenticate anyone. Put this behind a real
+# auth layer before exposing non-demo data.
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
+    allow_origins=CORS_ALLOW_ORIGINS,
+    allow_origin_regex=CORS_ALLOW_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/healthz", tags=["Ops"])
+async def healthz():
+    """Liveness probe for the container/load balancer. Deliberately does
+    no database work: it answers "is this process serving?", which is what
+    a restart policy should act on. A database problem should surface as a
+    real 500 from a real endpoint, not silently cycle the container.
+    """
+    return {"status": "ok"}
 
 app.include_router(analyst_router, tags=["Analyst"])
 app.include_router(head_of_operations_router, tags=["Head of Operations"])

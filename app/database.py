@@ -5,10 +5,14 @@ import os
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-DATA_DIR = "data"
-DB_PATH = os.path.join(DATA_DIR, "payments.db")
+from .config import DB_PATH
 
-os.makedirs(DATA_DIR, exist_ok=True)
+# Ensure the database's own directory exists -- DB_PATH is configurable
+# (see app/config.py) so in a container it points at a mounted volume,
+# whose parent may not exist on first boot.
+_db_dir = os.path.dirname(DB_PATH)
+if _db_dir:
+    os.makedirs(_db_dir, exist_ok=True)
 
 engine = create_engine(
     f"sqlite:///{DB_PATH}",
