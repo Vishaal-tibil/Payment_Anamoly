@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from .anomaly.categories import get_pattern_mix
 from .anomaly.models import EntitySnapshot
-from .canonical_event_lookup import CanonicalEventLookup
+from .canonical_event_lookup import JSON_COLUMN_DEFERRALS, CanonicalEventLookup
 from .claim_dates import operational_issue_date as _operational_issue_date
 from .claim_dates import parse_occurred_at as _parse_occurred_at
 from .claim_dates import reconciliation_break_date as _reconciliation_break_date
@@ -139,7 +139,14 @@ def get_rail_stats(
     db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
 ) -> dict[str, Any]:
     lower, upper = occurred_at_bounds(start_date, end_date)
-    events_query = db.query(CanonicalEvent).filter(CanonicalEvent.tenant_bank_id == tenant_bank_id)
+    # Only rail_type/status/amount are read below -- defer the 9 JSON
+    # columns so this doesn't pay to deserialize them, same reasoning
+    # (and same measured win) as app/canonical_event_lookup.py.
+    events_query = (
+        db.query(CanonicalEvent)
+        .options(*JSON_COLUMN_DEFERRALS())
+        .filter(CanonicalEvent.tenant_bank_id == tenant_bank_id)
+    )
     if lower:
         events_query = events_query.filter(CanonicalEvent.transaction_occurred_at >= lower)
     if upper:

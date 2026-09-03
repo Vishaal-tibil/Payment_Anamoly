@@ -17,6 +17,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from ..canonical_event_lookup import CanonicalEventLookup
 from .models import InvestigationCase
 from .trend import category_weekly_trend
 
@@ -49,9 +50,15 @@ def get_ai_identified_patterns(db: Session, tenant_bank_id: str) -> dict[str, An
     for case in cases:
         grouped[(case.category, case.payment_rail)].append(case)
 
+    # One shared CanonicalEvent scan for every (category, rail) pair below.
+    # category_weekly_trend used to build its own per call, so this loop
+    # scanned every CanonicalEvent row once per pair -- 20 scans / 10,400
+    # rows for one real request, and by far this endpoint's dominant cost.
+    lookup = CanonicalEventLookup(db, tenant_bank_id)
+
     patterns = []
     for (category, rail), group in grouped.items():
-        trend = category_weekly_trend(db, tenant_bank_id, category, rail)
+        trend = category_weekly_trend(db, tenant_bank_id, category, rail, lookup)
         if trend is None:
             continue  # no real 2+ week baseline -- never show a fabricated vs-baseline number
 
