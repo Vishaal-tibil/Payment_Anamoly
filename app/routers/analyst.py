@@ -46,6 +46,7 @@ from ..exposure import (
 )
 from ..investigation.cases import compute_cases as compute_investigation_cases
 from ..investigation.cases import get_anomaly_type_counts
+from ..investigation.failure_rate_trend import get_case_failure_rate_trend
 from ..investigation.models import InvestigationCase, InvestigationCaseAlert
 from ..investigation.patterns import get_ai_identified_patterns
 from ..investigation.sla import get_cases_approaching_sla, resolve_real_case_anchor
@@ -711,6 +712,19 @@ async def get_investigation_case(case_id: int, tenant_bank_id: str, db: Session 
         **_investigation_case_summary(case),
         "alerts": [_investigation_case_alert_summary(a) for a in alerts],
     }
+
+
+@router.get("/investigation/cases/{case_id}/failure-rate-trend")
+async def investigation_case_failure_rate_trend(case_id: int, tenant_bank_id: str, db: Session = Depends(get_db)):
+    """Real weekly rate trend for the Case Details "Supporting Evidence"
+    chart -- see app/investigation/failure_rate_trend.py's docstring for
+    exactly which case categories have a real rate to plot vs. which
+    honestly return available=False.
+    """
+    result = get_case_failure_rate_trend(db, tenant_bank_id, case_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"No investigation case id={case_id} for this tenant")
+    return result
 
 
 _CASE_VALIDATION_STATUSES = ("PENDING", "VALID", "INVALID")
