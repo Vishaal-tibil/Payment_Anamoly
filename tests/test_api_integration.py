@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.database import SessionLocal
 from app.main import app
-from app.models import CanonicalEvent
+from app.models import CanonicalEvent, Individual, Merchant
 
 SAMPLE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "sample_data")
 
@@ -20,6 +20,29 @@ def client():
         yield c
 
 
+@pytest.fixture()
+def fresh_keybank():
+    """Clears the KEYBANK tenant's ingested rows before the test runs.
+
+    These tests assert pre-resolution state ("merchant_id is None until
+    resolve_parties() runs", "resolve created N new merchants"), which is
+    only true from a clean slate. They share the file-backed demo db, so
+    whatever a previous run -- or a committed data/payments.db -- left
+    behind was silently making those preconditions false. KEYBANK is
+    purely this file's fixture tenant (the real demo data lives under
+    MERIDIAN_TRUST_BANK and is never touched here), so clearing it is
+    safe and makes these tests order- and state-independent, the same
+    property the get-or-create helpers give the other suites.
+    """
+    db = SessionLocal()
+    try:
+        for model in (CanonicalEvent, Merchant, Individual):
+            db.query(model).filter_by(tenant_bank_id="KEYBANK").delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+
+
 def _upload(client: TestClient, filename: str, stage: str, rail_type: str = "WIRE"):
     path = os.path.join(SAMPLE_DIR, filename)
     with open(path, "rb") as f:
@@ -30,7 +53,7 @@ def _upload(client: TestClient, filename: str, stage: str, rail_type: str = "WIR
         )
 
 
-def test_ingest_sample_pre_then_post_merges_into_one_row(client):
+def test_ingest_sample_pre_then_post_merges_into_one_row(fresh_keybank, client):
     pre = _upload(client, "keybank_wire_pre.csv", "PRE")
     assert pre.status_code == 200, pre.text
     pre_body = pre.json()
@@ -92,7 +115,7 @@ def test_reingesting_same_file_is_idempotent(client):
     assert count_after == max(count_before, 2)
 
 
-def test_ingest_card_then_resolve_then_list_merchants(client):
+def test_ingest_card_then_resolve_then_list_merchants(fresh_keybank, client):
     pre = _upload(client, "keybank_card_pre.csv", "PRE", rail_type="CARD")
     assert pre.status_code == 200, pre.text
     assert pre.json()["rows_failed"] == 0

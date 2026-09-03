@@ -3,13 +3,16 @@ tenant-wide summary the senior view reads from.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from ..anomaly.categories import FUNNEL_ACCOUNT_THRESHOLD
 from ..anomaly.models import BeneficiarySnapshot, EntitySnapshot
+from ..canonical_event_lookup import CanonicalEventLookup
+from ..claim_dates import operational_issue_date, reconciliation_break_date
+from ..date_filter import date_in_range
 from ..operations.models import OperationalIssue
 from ..reconciliation.models import ReconciliationBreak
 from .models import CONFIRMED, DISMISSED, PENDING, STATUSES, AnalystReview
@@ -69,41 +72,80 @@ def set_review(
     return row
 
 
-def _claim_count(db: Session, tenant_bank_id: str) -> dict[str, int]:
-    counts = {}
-    for signal_type, model in _CLAIM_MODELS.items():
-        counts[signal_type] = db.query(model).filter_by(tenant_bank_id=tenant_bank_id).count()
-    counts["fraud_anomaly"] = (
+def _claim_ids_by_type(
+    db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
+) -> dict[str, set[str]]:
+    """The real reference_id of every claim per signal_type, scoped to the
+    real window each claim's own condition occurred in (never detected_at
+    -- see app/claim_dates.py). Returns ids, not just counts, so the
+    reviewed/pending split below can be computed over exactly the same
+    set of claims rather than counting reviews that belong to claims
+    outside the window.
+    """
+    lookup = CanonicalEventLookup(db, tenant_bank_id) if (start_date or end_date) else None
+
+    issues = db.query(OperationalIssue).filter_by(tenant_bank_id=tenant_bank_id).all()
+    breaks = db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id).all()
+    snapshots = (
         db.query(EntitySnapshot)
         .filter(EntitySnapshot.tenant_bank_id == tenant_bank_id, EntitySnapshot.anomaly_band.in_(_MATERIAL_ANOMALY_BANDS))
-        .count()
+        .all()
     )
-    counts["funnel_account"] = (
+    beneficiaries = (
         db.query(BeneficiarySnapshot)
         .filter(BeneficiarySnapshot.tenant_bank_id == tenant_bank_id, BeneficiarySnapshot.funnel_drift_score >= FUNNEL_ACCOUNT_THRESHOLD)
-        .count()
+        .all()
     )
-    return counts
+
+    if lookup is None:  # no window requested -- every real claim counts
+        return {
+            "operational_issue": {str(i.id) for i in issues},
+            "reconciliation_break": {str(b.id) for b in breaks},
+            "fraud_anomaly": {str(s.id) for s in snapshots},
+            "funnel_account": {str(s.id) for s in beneficiaries},
+        }
+
+    return {
+        "operational_issue": {
+            str(i.id) for i in issues if date_in_range(operational_issue_date(lookup, i), start_date, end_date)
+        },
+        "reconciliation_break": {
+            str(b.id) for b in breaks if date_in_range(reconciliation_break_date(lookup, b), start_date, end_date)
+        },
+        # Both snapshot types carry their own real window_end -- no join needed.
+        "fraud_anomaly": {str(s.id) for s in snapshots if date_in_range(s.window_end, start_date, end_date)},
+        "funnel_account": {str(s.id) for s in beneficiaries if date_in_range(s.window_end, start_date, end_date)},
+    }
 
 
-def get_review_summary(db: Session, tenant_bank_id: str) -> dict[str, Any]:
+def get_review_summary(
+    db: Session, tenant_bank_id: str, start_date: date | None = None, end_date: date | None = None,
+) -> dict[str, Any]:
     """Tenant-wide review completion, the number the senior view leads
     with: how much of what's been detected has an analyst actually
     looked at, broken down by outcome and by which engine found it.
-    """
-    total_claims_by_type = _claim_count(db, tenant_bank_id)
-    total_claims = sum(total_claims_by_type.values())
 
-    reviews = db.query(AnalystReview).filter_by(tenant_bank_id=tenant_bank_id).all()
+    start_date/end_date scope this to the claims whose own real condition
+    occurred in that window (app/claim_dates.py), and count only reviews
+    belonging to those claims -- so review_rate stays a true "of what
+    happened in this window, how much have we looked at" rather than
+    mixing a windowed denominator with an all-time numerator.
+    """
+    claim_ids_by_type = _claim_ids_by_type(db, tenant_bank_id, start_date, end_date)
+    total_claims = sum(len(ids) for ids in claim_ids_by_type.values())
+
+    all_reviews = db.query(AnalystReview).filter_by(tenant_bank_id=tenant_bank_id).all()
+    reviews = [r for r in all_reviews if r.reference_id in claim_ids_by_type.get(r.signal_type, set())]
+
     confirmed = sum(1 for r in reviews if r.status == CONFIRMED)
     dismissed = sum(1 for r in reviews if r.status == DISMISSED)
     reviewed = confirmed + dismissed
     pending = max(0, total_claims - reviewed)
 
     by_type = {}
-    for signal_type, total in total_claims_by_type.items():
-        type_reviews = [r for r in reviews if r.signal_type == signal_type]
-        type_reviewed = sum(1 for r in type_reviews if r.status in (CONFIRMED, DISMISSED))
+    for signal_type, claim_ids in claim_ids_by_type.items():
+        total = len(claim_ids)
+        type_reviewed = sum(1 for r in reviews if r.signal_type == signal_type and r.status in (CONFIRMED, DISMISSED))
         by_type[signal_type] = {
             "total_claims": total,
             "reviewed": type_reviewed,

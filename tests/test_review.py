@@ -86,12 +86,20 @@ def test_review_summary_excludes_normal_and_low_medium_anomaly_bands(db_session)
 
 
 def test_review_summary_reflects_confirmed_and_dismissed(db_session):
-    db_session.add(OperationalIssue(issue_type="DUPLICATE_PAYMENT", tenant_bank_id="KEYBANK", reference_type="TRANSACTION", reference_id="TXN-1"))
-    db_session.add(OperationalIssue(issue_type="DUPLICATE_PAYMENT", tenant_bank_id="KEYBANK", reference_type="TRANSACTION", reference_id="TXN-2"))
+    """AnalystReview.reference_id is the claim row's PRIMARY KEY, not its
+    business reference_id -- the convention /review/set, /review/status
+    and app/exposure.py's claims all use. get_review_summary now matches
+    each review back to a real claim by that key, so seeding a review
+    against a transaction id (as this test used to) correctly counts as
+    zero reviewed.
+    """
+    issue_a = OperationalIssue(issue_type="DUPLICATE_PAYMENT", tenant_bank_id="KEYBANK", reference_type="TRANSACTION", reference_id="TXN-1")
+    issue_b = OperationalIssue(issue_type="DUPLICATE_PAYMENT", tenant_bank_id="KEYBANK", reference_type="TRANSACTION", reference_id="TXN-2")
+    db_session.add_all([issue_a, issue_b])
     db_session.commit()
 
-    set_review(db_session, "operational_issue", "TXN-1", "KEYBANK", "CONFIRMED")
-    set_review(db_session, "operational_issue", "TXN-2", "KEYBANK", "DISMISSED")
+    set_review(db_session, "operational_issue", str(issue_a.id), "KEYBANK", "CONFIRMED")
+    set_review(db_session, "operational_issue", str(issue_b.id), "KEYBANK", "DISMISSED")
 
     summary = get_review_summary(db_session, "KEYBANK")
 

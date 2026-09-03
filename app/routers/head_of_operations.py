@@ -4,6 +4,8 @@ the underlying analyst review workflow those rollups are computed from.
 """
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -118,8 +120,17 @@ async def get_review_status_endpoint(
 
 
 @router.get("/review/summary")
-async def get_review_summary_endpoint(tenant_bank_id: str, db: Session = Depends(get_db)):
-    return get_review_summary(db, tenant_bank_id)
+async def get_review_summary_endpoint(
+    tenant_bank_id: str,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    db: Session = Depends(get_db),
+):
+    """start_date/end_date (optional "YYYY-MM-DD") scope this to claims
+    whose own real condition occurred in that window, counting only those
+    claims' reviews -- see get_review_summary()'s docstring.
+    """
+    return get_review_summary(db, tenant_bank_id, start_date, end_date)
 
 
 @router.get("/dashboard/anomaly-detection-categories")
