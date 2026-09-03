@@ -883,7 +883,7 @@
           "Analyst"
         ],
         "summary": "Dashboard Exposure",
-        "description": "Real-dollar exposure views -- see app/exposure.py for exactly what\n\"exposure\" and \"mitigated\" mean here and why. Combined into one call\nsince the Overview and Anomalies pages each read a subset of the same\nunderlying real claims (see app/exposure.py's _all_claims()).\nstart_date/end_date (optional \"YYYY-MM-DD\") scope every figure here to\nthat real transaction window.",
+        "description": "Real-dollar exposure views -- see app/exposure.py for exactly what\n\"exposure\" and \"mitigated\" mean here and why. Combined into one call\nsince the Overview and Anomalies pages each read a subset of the same\nunderlying real claims (see app/exposure.py's _all_claims()).\nstart_date/end_date (optional \"YYYY-MM-DD\") scope every figure here to\nthat real transaction window.\n\nOne CanonicalEventLookup built here and passed to all six calls below\n-- confirmed via direct latency measurement that letting each of them\nindependently build its own (the previous shape) made this endpoint\nslower, not faster: six full CanonicalEvent scans per request instead\nof one.",
         "operationId": "dashboard_exposure_dashboard_exposure_get",
         "parameters": [
           {
@@ -1269,6 +1269,88 @@
         }
       }
     },
+    "/dashboard/transaction-status-breakdown": {
+      "get": {
+        "tags": [
+          "Analyst"
+        ],
+        "summary": "Dashboard Transaction Status Breakdown",
+        "description": "Real counts per CanonicalEvent.status -- see\nget_transaction_status_breakdown()'s docstring.",
+        "operationId": "dashboard_transaction_status_breakdown_dashboard_transaction_status_breakdown_get",
+        "parameters": [
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dashboard/cases-approaching-sla": {
+      "get": {
+        "tags": [
+          "Analyst"
+        ],
+        "summary": "Dashboard Cases Approaching Sla",
+        "description": "Real PENDING cases overdue or nearing their priority's real v1 SLA\npolicy window -- see get_cases_approaching_sla()'s docstring for how\neach case's real age is resolved (never opened_at directly).",
+        "operationId": "dashboard_cases_approaching_sla_dashboard_cases_approaching_sla_get",
+        "parameters": [
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/agent/narrate": {
       "post": {
         "tags": [
@@ -1508,6 +1590,47 @@
         }
       }
     },
+    "/investigation/ai-patterns": {
+      "get": {
+        "tags": [
+          "Analyst"
+        ],
+        "summary": "List Ai Identified Patterns",
+        "description": "Real, ranked category+rail patterns -- see\nget_ai_identified_patterns()'s docstring for exactly which real\nnumbers back each field (never new ML pattern discovery, a real\naggregation of already-computed data).",
+        "operationId": "list_ai_identified_patterns_investigation_ai_patterns_get",
+        "parameters": [
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/investigation/cases": {
       "get": {
         "tags": [
@@ -1539,6 +1662,40 @@
                 }
               ],
               "title": "Priority Level"
+            }
+          },
+          {
+            "name": "start_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "name": "end_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
             }
           },
           {
@@ -1591,6 +1748,56 @@
         ],
         "summary": "Get Investigation Case",
         "operationId": "get_investigation_case_investigation_cases__case_id__get",
+        "parameters": [
+          {
+            "name": "case_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Case Id"
+            }
+          },
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/investigation/cases/{case_id}/failure-rate-trend": {
+      "get": {
+        "tags": [
+          "Analyst"
+        ],
+        "summary": "Investigation Case Failure Rate Trend",
+        "description": "Real weekly rate trend for the Case Details \"Supporting Evidence\"\nchart -- see app/investigation/failure_rate_trend.py's docstring for\nexactly which case categories have a real rate to plot vs. which\nhonestly return available=False.",
+        "operationId": "investigation_case_failure_rate_trend_investigation_cases__case_id__failure_rate_trend_get",
         "parameters": [
           {
             "name": "case_id",
@@ -1925,6 +2132,65 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AnomalyDetectionCategories"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/incidents/enterprise-impact": {
+      "get": {
+        "tags": [
+          "Head of Operations"
+        ],
+        "summary": "Incident Enterprise Impact",
+        "description": "Real cross-referenced \"Enterprise Impact\" for one incident (Incident\nDetails page) -- see app/incident_impact.py's docstring for exactly\nwhich of the original 6 rows are real vs. honestly never returned\n(chargeback rate / dispute resolution time have no concept anywhere\nin this schema).",
+        "operationId": "incident_enterprise_impact_incidents_enterprise_impact_get",
+        "parameters": [
+          {
+            "name": "tenant_bank_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tenant Bank Id"
+            }
+          },
+          {
+            "name": "signal_type",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Signal Type"
+            }
+          },
+          {
+            "name": "signal_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Signal Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }

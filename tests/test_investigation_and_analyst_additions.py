@@ -11,6 +11,7 @@ from app.database import SessionLocal
 from app.exposure import get_anomaly_heatmap, get_exposure_by_rail
 from app.agent.models import AgentNarrative
 from app.investigation.cases import compute_cases, get_anomaly_type_counts
+from app.investigation.failure_rate_trend import get_case_failure_rate_trend
 from app.investigation.models import InvestigationCase, InvestigationCaseAlert
 from app.main import app
 from app.models import CanonicalEvent
@@ -373,3 +374,118 @@ def test_review_quality_trend_daily_buckets_by_day(db_session):
 
 def test_review_quality_trend_daily_empty_with_no_reviews(db_session):
     assert get_review_quality_trend_daily(db_session, "KEYBANK") == []
+
+
+# -- app/investigation/failure_rate_trend.py --------------------------------
+
+
+def _weekly_snapshot(db, party_id, window_start, ratio_field, ratio_value, **overrides):
+    defaults = dict(
+        tenant_bank_id="KEYBANK", party_id=party_id, party_type="MERCHANT", segment="MERCHANT",
+        window_type="WEEKLY", window_start=window_start, window_end=window_start + timedelta(days=6),
+    )
+    defaults.update(overrides)
+    defaults[ratio_field] = ratio_value
+    snap = EntitySnapshot(**defaults)
+    db.add(snap)
+    return snap
+
+
+def test_failure_rate_trend_available_with_real_baseline_and_spike(db_session):
+    party_id = "MERCH-TREND-01"
+    weeks = [datetime(2026, 1, 5 + 7 * i, tzinfo=timezone.utc) for i in range(4)]
+    ratios = [0.03, 0.08, 0.04, 0.30]  # last week is the real spike
+    for week_start, ratio in zip(weeks, ratios):
+        _weekly_snapshot(db_session, party_id, week_start, "timeout_ratio", ratio)
+
+    issue = OperationalIssue(
+        issue_type="NETWORK_TIMEOUT_SPIKE", tenant_bank_id="KEYBANK", reference_type="PARTY", reference_id=party_id,
+        window_start=weeks[3], window_end=weeks[3] + timedelta(days=6), severity_score=100.0,
+    )
+    db_session.add(issue)
+    db_session.flush()
+
+    case = InvestigationCase(
+        case_code="CNO-TRENDTEST1", tenant_bank_id="KEYBANK", category="NETWORK_TIMEOUT_SPIKE", title="Timeout Cluster",
+        transactions_affected=1, contributing_alerts_count=1, opened_at=weeks[3], severity_score=100.0, priority_level="Critical",
+    )
+    db_session.add(case)
+    db_session.flush()
+    db_session.add(InvestigationCaseAlert(
+        case_id=case.id, tenant_bank_id="KEYBANK", alert_code="ALT-GEN-0100", source_type="OPERATIONAL_ISSUE",
+        source_id=issue.id, anomaly_category="Operational", anomaly_type="Failure-rate spike",
+        description="test", detected_at=weeks[3] + timedelta(days=6),
+    ))
+    db_session.commit()
+
+    result = get_case_failure_rate_trend(db_session, "KEYBANK", case.id)
+
+    assert result["available"] is True
+    assert result["title"] == "Network Timeout Rate vs. Expected Baseline"
+    assert result["unit"] == "%"
+    assert [p["value"] for p in result["points"]] == [3.0, 8.0, 4.0, 30.0]
+    assert result["baseline_value"] == pytest.approx(5.0, abs=0.01)
+    assert result["threshold_value"] == pytest.approx(10.29, abs=0.01)
+    assert result["max_value"] >= 30.0
+    # Only the real triggering week (|z|=9.4, way past the 2.0 cutoff)
+    # gets an annotation -- the earlier weeks' modest wobble stays quiet.
+    assert len(result["annotations"]) == 1
+    assert result["annotations"][0]["time"] == weeks[3].date().isoformat()
+
+
+def test_failure_rate_trend_unavailable_for_non_rate_category(db_session):
+    case = InvestigationCase(
+        case_code="CNO-TRENDTEST2", tenant_bank_id="KEYBANK", category="CONFIRMED_BREAK", title="Break Cluster",
+        transactions_affected=1, contributing_alerts_count=1, opened_at=datetime.now(timezone.utc),
+    )
+    db_session.add(case)
+    db_session.commit()
+
+    result = get_case_failure_rate_trend(db_session, "KEYBANK", case.id)
+
+    assert result["available"] is False
+    assert result["points"] == []
+    assert "No real per-week rate" in result["reason"]
+
+
+def test_failure_rate_trend_unavailable_with_insufficient_history(db_session):
+    party_id = "MERCH-TREND-02"
+    weeks = [datetime(2026, 1, 5 + 7 * i, tzinfo=timezone.utc) for i in range(2)]  # only 2 real weeks
+    for week_start, ratio in zip(weeks, [0.05, 0.30]):
+        _weekly_snapshot(db_session, party_id, week_start, "format_reject_ratio", ratio)
+
+    issue = OperationalIssue(
+        issue_type="FORMAT_REJECTION_SPIKE", tenant_bank_id="KEYBANK", reference_type="PARTY", reference_id=party_id,
+        window_start=weeks[1], window_end=weeks[1] + timedelta(days=6), severity_score=80.0,
+    )
+    db_session.add(issue)
+    db_session.flush()
+
+    case = InvestigationCase(
+        case_code="CNO-TRENDTEST3", tenant_bank_id="KEYBANK", category="FORMAT_REJECTION_SPIKE", title="Rejection Cluster",
+        transactions_affected=1, contributing_alerts_count=1, opened_at=weeks[1],
+    )
+    db_session.add(case)
+    db_session.flush()
+    db_session.add(InvestigationCaseAlert(
+        case_id=case.id, tenant_bank_id="KEYBANK", alert_code="ALT-GEN-0200", source_type="OPERATIONAL_ISSUE",
+        source_id=issue.id, anomaly_category="Operational", anomaly_type="Formatting rejection spike",
+        description="test", detected_at=weeks[1] + timedelta(days=6),
+    ))
+    db_session.commit()
+
+    result = get_case_failure_rate_trend(db_session, "KEYBANK", case.id)
+
+    assert result["available"] is False
+    assert "Fewer than 3" in result["reason"]
+
+
+def test_failure_rate_trend_404_for_wrong_tenant(client):
+    case_id = _seed_case("CNO-TRENDTEST4", category="CONFIRMED_BREAK")
+
+    resp = client.get(f"/investigation/cases/{case_id}/failure-rate-trend", params={"tenant_bank_id": "SOME-OTHER-TENANT"})
+    assert resp.status_code == 404
+
+    resp = client.get(f"/investigation/cases/{case_id}/failure-rate-trend", params={"tenant_bank_id": _TENANT})
+    assert resp.status_code == 200
+    assert resp.json()["available"] is False
