@@ -1846,6 +1846,7 @@
           "Analyst"
         ],
         "summary": "Validate Investigation Case",
+        "description": "Marking a case Valid/Invalid now propagates a real AnalystReview\n(CONFIRMED/DISMISSED) to every one of its contributing alerts -- this\nis the only real analyst feedback loop that feeds Detection\nPerformance's confirmation_rate/false_positive_rate (app/review/,\nnever validation_status itself, which stays a display-only summary\nof what those real reviews already say). A case is at least as\nauthoritative as its parts, so this overwrites any prior individual\nreview on a contributing alert (same \"cluster overrides its own\nmembers\" rule InvestigationCase.severity_score already follows).",
         "operationId": "validate_investigation_case_investigation_cases__case_id__validate_post",
         "parameters": [
           {
@@ -3773,6 +3774,17 @@
           "validation_status": {
             "type": "string",
             "title": "Validation Status"
+          },
+          "reviewed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed By"
           }
         },
         "type": "object",

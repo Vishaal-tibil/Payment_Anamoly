@@ -53,7 +53,8 @@ from ..investigation.sla import get_cases_approaching_sla, resolve_real_case_anc
 from ..operations.models import OperationalIssue
 from ..priority import priority_levels_for_breaks, priority_levels_for_issues
 from ..reconciliation.models import ReconciliationBreak
-from ..review.service import get_review_quality_trend_daily
+from ..review.models import CONFIRMED, DISMISSED, PENDING
+from ..review.service import get_review_quality_trend_daily, set_review
 
 router = APIRouter()
 
@@ -729,14 +730,36 @@ async def investigation_case_failure_rate_trend(case_id: int, tenant_bank_id: st
 
 _CASE_VALIDATION_STATUSES = ("PENDING", "VALID", "INVALID")
 
+# InvestigationCaseAlert.source_type -> AnalystReview.signal_type. Real
+# case validation only ever clusters these 3 source types (see
+# app/investigation/cases.py's compute_cases -- funnel_account signals are
+# never clustered into cases), so this map is exhaustive.
+_SOURCE_TYPE_TO_SIGNAL_TYPE = {
+    "OPERATIONAL_ISSUE": "operational_issue",
+    "RECONCILIATION_BREAK": "reconciliation_break",
+    "ANOMALY_SNAPSHOT": "fraud_anomaly",
+}
+_CASE_STATUS_TO_REVIEW_STATUS = {"VALID": CONFIRMED, "INVALID": DISMISSED, "PENDING": PENDING}
+
 
 class ValidateCaseRequest(BaseModel):
     tenant_bank_id: str
     validation_status: str  # "PENDING" | "VALID" | "INVALID"
+    reviewed_by: str | None = None
 
 
 @router.post("/investigation/cases/{case_id}/validate")
 async def validate_investigation_case(case_id: int, body: ValidateCaseRequest, db: Session = Depends(get_db)):
+    """Marking a case Valid/Invalid now propagates a real AnalystReview
+    (CONFIRMED/DISMISSED) to every one of its contributing alerts -- this
+    is the only real analyst feedback loop that feeds Detection
+    Performance's confirmation_rate/false_positive_rate (app/review/,
+    never validation_status itself, which stays a display-only summary
+    of what those real reviews already say). A case is at least as
+    authoritative as its parts, so this overwrites any prior individual
+    review on a contributing alert (same "cluster overrides its own
+    members" rule InvestigationCase.severity_score already follows).
+    """
     if body.validation_status not in _CASE_VALIDATION_STATUSES:
         raise HTTPException(status_code=400, detail=f"validation_status must be one of {_CASE_VALIDATION_STATUSES}")
 
@@ -745,6 +768,15 @@ async def validate_investigation_case(case_id: int, body: ValidateCaseRequest, d
         raise HTTPException(status_code=404, detail=f"No investigation case id={case_id} for this tenant")
 
     case.validation_status = body.validation_status
+
+    review_status = _CASE_STATUS_TO_REVIEW_STATUS[body.validation_status]
+    alerts = db.query(InvestigationCaseAlert).filter_by(case_id=case.id, tenant_bank_id=body.tenant_bank_id).all()
+    for alert in alerts:
+        signal_type = _SOURCE_TYPE_TO_SIGNAL_TYPE.get(alert.source_type)
+        if signal_type is None:
+            continue
+        set_review(db, signal_type, str(alert.source_id), body.tenant_bank_id, review_status, reviewed_by=body.reviewed_by)
+
     db.commit()
     db.refresh(case)
     return _investigation_case_summary(case)

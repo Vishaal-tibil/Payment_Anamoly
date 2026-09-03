@@ -51,7 +51,11 @@ class InvestigationCase(Base):
     # cluster to point to).
     priority_reason = Column(String, nullable=True)
 
-    # Display-only -- see module docstring. PENDING | VALID | INVALID.
+    # PENDING | VALID | INVALID. Setting this (see app/routers/analyst.py's
+    # validate_investigation_case()) propagates a real AnalystReview to
+    # every contributing alert -- this column itself is still never read
+    # by any review/detection-performance metric, only written alongside
+    # the real ones, so it can't become a second source of truth.
     validation_status = Column(String, nullable=False, default="PENDING")
 
     opened_at = Column(DateTime(timezone=True), nullable=False)
