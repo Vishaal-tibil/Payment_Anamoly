@@ -573,9 +573,10 @@ async def list_narratives(
 # --- Investigation Cases (Investigation Queue) ---
 # Groups existing OperationalIssue/ReconciliationBreak/EntitySnapshot rows
 # into cases -- see app/investigation/cases.py for the clustering rule.
-# validation_status below is display-only: it never touches
-# analyst_reviews or any Detection Performance metric (no feedback loop
-# yet, by design -- see app/investigation package docstring).
+# Setting validation_status (validate_investigation_case below) writes a
+# real AnalystReview for every contributing alert, which IS what Detection
+# Performance's confirmation_rate/false_positive_rate reads -- the column
+# itself is never read by those metrics, only written alongside them.
 
 class ComputeCasesRequest(BaseModel):
     tenant_bank_id: str | None = None
