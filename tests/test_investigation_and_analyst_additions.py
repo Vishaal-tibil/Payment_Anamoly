@@ -433,9 +433,39 @@ def test_failure_rate_trend_available_with_real_baseline_and_spike(db_session):
     assert result["annotations"][0]["time"] == weeks[3].date().isoformat()
 
 
-def test_failure_rate_trend_unavailable_for_non_rate_category(db_session):
+def test_failure_rate_trend_falls_back_to_category_frequency_for_non_rate_category(db_session):
+    """No per-case rate concept for CONFIRMED_BREAK -- but with real breaks
+    spread across 2+ real weeks for this case's (category, rail), the
+    tenant-wide frequency fallback (trend.py's category_weekly_trend)
+    kicks in instead of an outright available=False.
+    """
+    weeks = [datetime(2026, 1, 5 + 7 * i, tzinfo=timezone.utc) for i in range(3)]
+    for i, week_start in enumerate(weeks):
+        txn_id = f"TXN-BREAK-{i}"
+        _event(db_session, transaction_id=txn_id, rail_type="ACH", transaction_occurred_at=week_start.isoformat())
+        db_session.add(ReconciliationBreak(
+            tenant_bank_id="KEYBANK", transaction_id=txn_id, rail_type="ACH",
+            detection_type="CONFIRMED_BREAK", amount=100.0, detected_at=week_start,
+        ))
+
     case = InvestigationCase(
-        case_code="CNO-TRENDTEST2", tenant_bank_id="KEYBANK", category="CONFIRMED_BREAK", title="Break Cluster",
+        case_code="CNO-TRENDTEST2", tenant_bank_id="KEYBANK", category="CONFIRMED_BREAK", payment_rail="ACH", title="Break Cluster",
+        transactions_affected=1, contributing_alerts_count=1, opened_at=weeks[-1],
+    )
+    db_session.add(case)
+    db_session.commit()
+
+    result = get_case_failure_rate_trend(db_session, "KEYBANK", case.id)
+
+    assert result["available"] is True
+    assert result["unit"] == "count"
+    assert len(result["points"]) == 3
+    assert "not this case's own rate" in result["subtitle"]
+
+
+def test_failure_rate_trend_unavailable_when_even_frequency_fallback_lacks_history(db_session):
+    case = InvestigationCase(
+        case_code="CNO-TRENDTEST5", tenant_bank_id="KEYBANK", category="CONFIRMED_BREAK", title="Break Cluster",
         transactions_affected=1, contributing_alerts_count=1, opened_at=datetime.now(timezone.utc),
     )
     db_session.add(case)
@@ -445,7 +475,7 @@ def test_failure_rate_trend_unavailable_for_non_rate_category(db_session):
 
     assert result["available"] is False
     assert result["points"] == []
-    assert "No real per-week rate" in result["reason"]
+    assert "Not enough real weekly history" in result["reason"]
 
 
 def test_failure_rate_trend_unavailable_with_insufficient_history(db_session):
