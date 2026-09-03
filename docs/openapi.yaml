@@ -1389,6 +1389,11 @@ paths:
       tags:
       - Head of Operations
       summary: Get Review Summary Endpoint
+      description: 'start_date/end_date (optional "YYYY-MM-DD") scope this to claims
+
+        whose own real condition occurred in that window, counting only those
+
+        claims'' reviews -- see get_review_summary()''s docstring.'
       operationId: get_review_summary_endpoint_review_summary_get
       parameters:
       - name: tenant_bank_id
@@ -1397,6 +1402,24 @@ paths:
         schema:
           type: string
           title: Tenant Bank Id
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: End Date
       responses:
         '200':
           description: Successful Response

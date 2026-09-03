@@ -26,6 +26,9 @@ from sqlalchemy.orm import Session
 from .anomaly.categories import get_pattern_mix
 from .anomaly.models import EntitySnapshot
 from .canonical_event_lookup import CanonicalEventLookup
+from .claim_dates import operational_issue_date as _operational_issue_date
+from .claim_dates import parse_occurred_at as _parse_occurred_at
+from .claim_dates import reconciliation_break_date as _reconciliation_break_date
 from .date_filter import date_in_range, datetime_bounds, occurred_at_bounds
 from .health.models import PaymentHealthScore
 from .models import CanonicalEvent, Individual, Merchant
@@ -33,43 +36,6 @@ from .operations.models import OperationalIssue
 from .priority import priority_levels_for_breaks, priority_levels_for_issues
 from .reconciliation.models import ReconciliationBreak
 from .review.service import get_review_quality_trend, get_review_summary
-
-
-def _parse_occurred_at(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
-def _operational_issue_date(lookup: CanonicalEventLookup, issue: OperationalIssue) -> datetime | None:
-    """The real date an operational issue's own detected condition
-    occurred, not when our engine detected it (detected_at is a batch
-    compute timestamp, not spread meaningfully over time -- see
-    priority.py's docstring for the same distinction). Rate-based issues
-    (spikes) carry their own real window_start/window_end; the other
-    types need the same reference_id/batch_id join app/exposure.py's
-    _operational_claims already uses for their dollar amounts.
-
-    Takes a CanonicalEventLookup (one query per caller, built once) --
-    not a db session -- since this used to run one CanonicalEvent query
-    per issue row, confirmed via direct latency measurement to be the
-    dominant real cost behind slow page loads.
-    """
-    if issue.window_end is not None:
-        return issue.window_end
-    if issue.issue_type == "BATCH_NOT_SETTLED":
-        event = lookup.first_by_batch_id(issue.reference_id)
-    else:
-        event = lookup.first_by_transaction_id(issue.reference_id)
-    return _parse_occurred_at(event.transaction_occurred_at) if event else None
-
-
-def _reconciliation_break_date(lookup: CanonicalEventLookup, brk: ReconciliationBreak) -> datetime | None:
-    event = lookup.by_rail_and_transaction_id(brk.rail_type, brk.transaction_id)
-    return _parse_occurred_at(event.transaction_occurred_at) if event else None
 
 
 def get_overview(
@@ -256,7 +222,10 @@ def _as_utc(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def _detection_latencies(db: Session, tenant_bank_id: str, lookup: CanonicalEventLookup) -> list[tuple[str | None, float]]:
+def _detection_latencies(
+    db: Session, tenant_bank_id: str, lookup: CanonicalEventLookup,
+    start_date: date | None = None, end_date: date | None = None,
+) -> list[tuple[str | None, float]]:
     """(rail_type, latency_seconds) for every signal where a real
     transaction timestamp is resolvable: TRANSACTION-referenced
     OperationalIssue rows and all ReconciliationBreak rows (both always
@@ -264,13 +233,18 @@ def _detection_latencies(db: Session, tenant_bank_id: str, lookup: CanonicalEven
     and EntitySnapshot windows have no single transaction to diff
     against, so they're excluded -- a real subset, not padded to cover
     every signal type.
+
+    start_date/end_date scope by when the underlying transaction really
+    occurred (the same `occurred` already needed for the latency itself),
+    not by detected_at -- consistent with every other date-scoped figure
+    in this module.
     """
     latencies: list[tuple[str | None, float]] = []
 
     for issue in db.query(OperationalIssue).filter_by(tenant_bank_id=tenant_bank_id, reference_type="TRANSACTION").all():
         event = lookup.first_by_transaction_id(issue.reference_id)
         occurred = _parse_occurred_at(event.transaction_occurred_at) if event else None
-        if occurred is None:
+        if occurred is None or not date_in_range(occurred, start_date, end_date):
             continue
         latency = (_as_utc(issue.detected_at) - _as_utc(occurred)).total_seconds()
         if latency >= 0:
@@ -279,7 +253,7 @@ def _detection_latencies(db: Session, tenant_bank_id: str, lookup: CanonicalEven
     for brk in db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id).all():
         event = lookup.by_rail_and_transaction_id(brk.rail_type, brk.transaction_id)
         occurred = _parse_occurred_at(event.transaction_occurred_at) if event else None
-        if occurred is None:
+        if occurred is None or not date_in_range(occurred, start_date, end_date):
             continue
         latency = (_as_utc(brk.detected_at) - _as_utc(occurred)).total_seconds()
         if latency >= 0:
@@ -288,17 +262,28 @@ def _detection_latencies(db: Session, tenant_bank_id: str, lookup: CanonicalEven
     return latencies
 
 
-def _detection_volume_by_category(db: Session, tenant_bank_id: str) -> list[dict[str, Any]]:
+def _detection_volume_by_category(
+    db: Session, tenant_bank_id: str, lookup: CanonicalEventLookup,
+    start_date: date | None = None, end_date: date | None = None,
+) -> list[dict[str, Any]]:
     """Reclassifies counts already computed elsewhere (operational issue
     rows, reconciliation break rows, scored fraud snapshots) into one
     percentage breakdown -- not new data, a different grouping of it.
+    Date-scoped by each row's own real occurrence (app/claim_dates.py for
+    issues/breaks, window_end for snapshots).
     """
-    operational_count = db.query(OperationalIssue).filter_by(tenant_bank_id=tenant_bank_id).count()
-    reconciliation_count = db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id).count()
-    fraud_count = (
-        db.query(EntitySnapshot)
-        .filter(EntitySnapshot.tenant_bank_id == tenant_bank_id, EntitySnapshot.anomaly_band.isnot(None))
-        .count()
+    operational_count = sum(
+        1 for i in db.query(OperationalIssue).filter_by(tenant_bank_id=tenant_bank_id).all()
+        if date_in_range(_operational_issue_date(lookup, i), start_date, end_date)
+    )
+    reconciliation_count = sum(
+        1 for b in db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id).all()
+        if date_in_range(_reconciliation_break_date(lookup, b), start_date, end_date)
+    )
+    fraud_count = sum(
+        1 for s in db.query(EntitySnapshot)
+        .filter(EntitySnapshot.tenant_bank_id == tenant_bank_id, EntitySnapshot.anomaly_band.isnot(None)).all()
+        if date_in_range(s.window_end, start_date, end_date)
     )
     total = operational_count + reconciliation_count + fraud_count
 
@@ -314,10 +299,14 @@ def _detection_volume_by_category(db: Session, tenant_bank_id: str) -> list[dict
 
 def _detection_performance_by_rail(
     db: Session, tenant_bank_id: str, latencies: list[tuple[str | None, float]], lookup: CanonicalEventLookup,
+    start_date: date | None = None, end_date: date | None = None,
 ) -> list[dict[str, Any]]:
     """Per rail: success_rate (fraction of that rail's transactions NOT
     referenced by any OperationalIssue/ReconciliationBreak) + median
     detection latency for the signals on that rail with a resolvable one.
+    Both numerator and denominator are scoped to the same real window, so
+    success_rate stays a true fraction rather than mixing a windowed
+    flagged-count with an all-time transaction total.
     """
     latency_by_rail: dict[str, list[float]] = defaultdict(list)
     for rail, lat in latencies:
@@ -327,15 +316,22 @@ def _detection_performance_by_rail(
     flagged_txn_ids_by_rail: dict[str, set[str]] = defaultdict(set)
     for issue in db.query(OperationalIssue).filter_by(tenant_bank_id=tenant_bank_id, reference_type="TRANSACTION").all():
         event = lookup.first_by_transaction_id(issue.reference_id)
-        if event:
+        if event and date_in_range(_parse_occurred_at(event.transaction_occurred_at), start_date, end_date):
             flagged_txn_ids_by_rail[event.rail_type].add(issue.reference_id)
     for brk in db.query(ReconciliationBreak).filter_by(tenant_bank_id=tenant_bank_id).all():
-        flagged_txn_ids_by_rail[brk.rail_type].add(brk.transaction_id)
+        if date_in_range(_reconciliation_break_date(lookup, brk), start_date, end_date):
+            flagged_txn_ids_by_rail[brk.rail_type].add(brk.transaction_id)
 
+    lower, upper = occurred_at_bounds(start_date, end_date)
     rail_types = [r for (r,) in db.query(CanonicalEvent.rail_type).filter_by(tenant_bank_id=tenant_bank_id).distinct().all()]
     result = []
     for rail_type in sorted(rail_types):
-        rail_total = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, rail_type=rail_type).count()
+        rail_total_query = db.query(CanonicalEvent).filter_by(tenant_bank_id=tenant_bank_id, rail_type=rail_type)
+        if lower:
+            rail_total_query = rail_total_query.filter(CanonicalEvent.transaction_occurred_at >= lower)
+        if upper:
+            rail_total_query = rail_total_query.filter(CanonicalEvent.transaction_occurred_at < upper)
+        rail_total = rail_total_query.count()
         flagged = len(flagged_txn_ids_by_rail.get(rail_type, set()))
         result.append({
             "rail_type": rail_type,
@@ -405,21 +401,22 @@ def get_detection_performance(
       system's own official BREAK verdict caught up to it (see
       app/reconciliation/breaks.py's module docstring).
 
-    start_date/end_date scope coverage and exposure-identified-early to
-    that real transaction window. confirmation_rate/false_positive_rate/
-    quality_trend are deliberately NOT scoped by it -- those are about
-    *when an analyst reviewed a claim*, a different real timeline than
-    when the underlying transaction happened, and filtering by transaction
-    date would misrepresent review activity that happened outside the
-    selected window but on a claim whose transaction fell inside it (or
-    vice versa). pattern_mix is a current-state snapshot of every flagged
-    entity's category match, same reasoning.
+    start_date/end_date scope every per-window figure here to that real
+    transaction window: coverage, exposure-identified-early,
+    confirmation_rate/false_positive_rate/reviewed/confirmed/dismissed
+    (via get_review_summary, which scopes to claims whose own condition
+    occurred in the window and counts only those claims' reviews),
+    median_detection_time_seconds, detection_volume_by_category and
+    detection_performance_by_rail.
 
-    median_detection_time_seconds/detection_volume_by_category/
-    detection_performance_by_rail/new_patterns_detected are also
-    unfiltered -- system-quality metrics computed over this tenant's
-    whole real history, not a per-window slice (same reasoning as
-    confirmation_rate above).
+    Three fields are deliberately NOT scoped, because a transaction-date
+    window is the wrong axis for them rather than because it's unbuilt:
+    - quality_trend: one point per real review action in reviewed_at
+      order -- a review-activity timeline, not a transaction timeline.
+    - pattern_mix: a current-state snapshot of every flagged entity's
+      category match.
+    - new_patterns_detected: "new" is already defined relative to the
+      data's own most recent detected_at (see _new_patterns_detected).
     """
     lower, upper = occurred_at_bounds(start_date, end_date)
 
@@ -462,9 +459,9 @@ def get_detection_performance(
     ]
     exposure_identified_early = sum(abs(b.amount) for b in early_breaks if b.amount is not None)
 
-    review = get_review_summary(db, tenant_bank_id)
+    review = get_review_summary(db, tenant_bank_id, start_date, end_date)
     reviewed_count = review["confirmed"] + review["dismissed"]
-    latencies = _detection_latencies(db, tenant_bank_id, event_lookup)
+    latencies = _detection_latencies(db, tenant_bank_id, event_lookup, start_date, end_date)
 
     return {
         "coverage_rate": (covered_transactions / total_transactions) if total_transactions else None,
@@ -480,8 +477,8 @@ def get_detection_performance(
         "confirmed_count": review["confirmed"],
         "dismissed_count": review["dismissed"],
         "median_detection_time_seconds": statistics.median([lat for _, lat in latencies]) if latencies else None,
-        "detection_volume_by_category": _detection_volume_by_category(db, tenant_bank_id),
-        "detection_performance_by_rail": _detection_performance_by_rail(db, tenant_bank_id, latencies, event_lookup),
+        "detection_volume_by_category": _detection_volume_by_category(db, tenant_bank_id, event_lookup, start_date, end_date),
+        "detection_performance_by_rail": _detection_performance_by_rail(db, tenant_bank_id, latencies, event_lookup, start_date, end_date),
         "new_patterns_detected": _new_patterns_detected(db, tenant_bank_id),
         "quality_trend": get_review_quality_trend(db, tenant_bank_id),
         "pattern_mix": get_pattern_mix(db, tenant_bank_id),

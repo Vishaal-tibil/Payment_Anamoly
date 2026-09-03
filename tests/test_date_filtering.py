@@ -9,7 +9,7 @@ from app.exposure import get_exposure_by_domain, get_mitigation_progress, get_pa
 from app.models import CanonicalEvent
 from app.operations.models import OperationalIssue
 from app.reconciliation.models import ReconciliationBreak
-from app.review.service import set_review
+from app.review.service import get_review_summary, set_review
 
 
 def _event(db, **overrides):
@@ -171,19 +171,25 @@ def test_detection_performance_coverage_scopes_by_date(db_session):
     assert result["covered_transactions"] == 1
 
 
-def test_detection_performance_confirmation_rate_not_scoped_by_date(db_session):
-    """Review timing is a different real timeline than transaction date --
-    see get_detection_performance's own docstring for why this stays
-    unfiltered.
+def test_detection_performance_confirmation_rate_is_scoped_by_date(db_session):
+    """confirmation_rate now scopes to claims whose own real condition
+    occurred in the window (via get_review_summary), so a window that
+    excludes the only reviewed claim's transaction reports no reviews
+    rather than an all-time rate next to date-filtered coverage numbers.
     """
+    _event(db_session, transaction_id="TXN-A", amount=100.0, transaction_occurred_at="2026-08-03T00:00:00Z")
     db_session.add(OperationalIssue(id=1, issue_type="DUPLICATE_PAYMENT", tenant_bank_id="KEYBANK", reference_type="TRANSACTION", reference_id="TXN-A"))
     db_session.commit()
     set_review(db_session, "operational_issue", "1", "KEYBANK", "CONFIRMED")
 
     unfiltered = get_detection_performance(db_session, "KEYBANK")
-    filtered = get_detection_performance(db_session, "KEYBANK", start_date=date(2026, 1, 1), end_date=date(2026, 1, 7))
+    in_window = get_detection_performance(db_session, "KEYBANK", start_date=date(2026, 8, 1), end_date=date(2026, 8, 7))
+    out_of_window = get_detection_performance(db_session, "KEYBANK", start_date=date(2026, 1, 1), end_date=date(2026, 1, 7))
 
-    assert unfiltered["confirmation_rate"] == filtered["confirmation_rate"] == 1.0
+    assert unfiltered["confirmation_rate"] == 1.0
+    assert in_window["confirmation_rate"] == 1.0  # the claim's real transaction date falls inside
+    assert out_of_window["confirmation_rate"] is None  # no claims in range at all
+    assert out_of_window["reviewed_count"] == 0
 
 
 # -- app/exposure.py ----------------------------------------------------------
@@ -257,3 +263,57 @@ def test_payment_normalcy_narrows_by_date_with_consistent_numerator_and_denomina
     assert result["total_transactions"] == 2
     assert result["touched_transactions"] == 1
     assert result["rate"] == 0.5
+
+
+# -- app/review/service.py: get_review_summary date scoping -------------------
+
+
+def test_review_summary_scopes_claims_and_their_reviews_by_date(db_session):
+    """Both numerator and denominator move together: a window that
+    excludes a claim's real transaction date drops that claim AND its
+    review, so review_rate never mixes a windowed denominator with an
+    all-time numerator.
+    """
+    _event(db_session, transaction_id="TXN-AUG", amount=100.0, transaction_occurred_at="2026-08-03T00:00:00Z")
+    _event(db_session, transaction_id="TXN-SEP", amount=100.0, transaction_occurred_at="2026-09-03T00:00:00Z")
+    aug = OperationalIssue(issue_type="DUPLICATE_PAYMENT", tenant_bank_id="KEYBANK", reference_type="TRANSACTION", reference_id="TXN-AUG")
+    sep = OperationalIssue(issue_type="DUPLICATE_PAYMENT", tenant_bank_id="KEYBANK", reference_type="TRANSACTION", reference_id="TXN-SEP")
+    db_session.add_all([aug, sep])
+    db_session.commit()
+    set_review(db_session, "operational_issue", str(aug.id), "KEYBANK", "CONFIRMED")
+
+    unfiltered = get_review_summary(db_session, "KEYBANK")
+    assert unfiltered["total_claims"] == 2
+    assert unfiltered["confirmed"] == 1
+    assert unfiltered["review_rate"] == 0.5
+
+    # August window: only the reviewed claim -> fully reviewed.
+    august = get_review_summary(db_session, "KEYBANK", date(2026, 8, 1), date(2026, 8, 7))
+    assert august["total_claims"] == 1
+    assert august["confirmed"] == 1
+    assert august["review_rate"] == 1.0
+
+    # September window: only the unreviewed claim -> nothing reviewed.
+    september = get_review_summary(db_session, "KEYBANK", date(2026, 9, 1), date(2026, 9, 7))
+    assert september["total_claims"] == 1
+    assert september["confirmed"] == 0
+    assert september["pending"] == 1
+    assert september["review_rate"] == 0.0
+
+
+def test_review_summary_ignores_reviews_with_no_matching_claim(db_session):
+    """A review whose reference_id matches no real claim row (an orphan
+    from a since-recomputed engine run) must not inflate the counts --
+    reference_id is the claim's primary key, see get_review_summary.
+    """
+    _event(db_session, transaction_id="TXN-1", amount=100.0, transaction_occurred_at="2026-08-03T00:00:00Z")
+    issue = OperationalIssue(issue_type="DUPLICATE_PAYMENT", tenant_bank_id="KEYBANK", reference_type="TRANSACTION", reference_id="TXN-1")
+    db_session.add(issue)
+    db_session.commit()
+    set_review(db_session, "operational_issue", "999999", "KEYBANK", "CONFIRMED")  # no such issue id
+
+    summary = get_review_summary(db_session, "KEYBANK")
+
+    assert summary["total_claims"] == 1
+    assert summary["confirmed"] == 0
+    assert summary["pending"] == 1
