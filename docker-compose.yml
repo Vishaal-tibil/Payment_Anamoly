@@ -19,6 +19,10 @@ services:
       # Supplied at runtime, never baked into the image. Narration fails
       # with a clear error if absent; every other endpoint still works.
       MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      # Quota failover -- narration moves to the next key when one is
+      # exhausted. Failover, not load balancing: the primary is preferred.
+      MISTRAL_API_KEY_2: ${MISTRAL_API_KEY_2:-}
+      MISTRAL_API_KEY_3: ${MISTRAL_API_KEY_3:-}
       MISTRAL_MODEL: ${MISTRAL_MODEL:-mistral-large-latest}
       # Exact origins of the hosted frontend, comma-separated. When set,
       # the localhost dev regex is NOT also allowed (see app/config.py).

@@ -107,10 +107,45 @@ analyst-readable narrative plus 1–3 ranked recommended actions.
 - **Cached** in `agent_narratives`, keyed by
   `(signal_type, tenant, reference_id)`. Measured: **~14s cold, ~200ms
   cached**. Never called on page load — only from an explicit user action.
-- **Optional.** Without `MISTRAL_API_KEY` the narration endpoints fail with a
-  clear error and every other endpoint keeps working.
+- **Optional.** Without a key the narration endpoints fail with a clear error
+  and every other endpoint keeps working.
 - The shared API tier intermittently returns a mis-worded `403` that is really
   a burst rate limit; the client retries with backoff.
+
+### Quota failover across multiple keys
+
+The shared tier exhausts. Configure more than one key and narration moves to
+the next one automatically instead of going dark mid-demo:
+
+```bash
+MISTRAL_API_KEY=primary-key
+MISTRAL_API_KEY_2=spare-key
+MISTRAL_API_KEY_3=another-spare
+# or, for container env vars:
+# MISTRAL_API_KEYS=key1,key2,key3
+```
+
+This is **failover, not load balancing** — the primary key is always preferred
+and spares stay untouched until it genuinely fails. Numbered variables must be
+contiguous (`_2`, then `_3`): a gap ends the list, so a typo can't silently
+leave a key unused.
+
+A key is only abandoned when its own failure says so:
+
+| Failure | Behaviour |
+|---|---|
+| `401` / invalid key | Skipped immediately — no backoff burned on a credential that can never work |
+| `429` / quota / `tier_not_allowed` | Retried on that key first (this tier's most common error is genuinely transient), then failover |
+| Anything else | Retried on the same key |
+
+If every key is exhausted the call still raises, so the UI falls back to the
+plain-facts display rather than showing anything ungrounded.
+
+Verify your keys — one real call each, key values never printed:
+
+```bash
+python scripts/check_mistral_keys.py
+```
 
 ---
 
