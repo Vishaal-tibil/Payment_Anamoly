@@ -20,8 +20,56 @@ load_dotenv()
 # EnvironmentFile, or `docker run --env-file`). The agent raises a clear
 # error if it's missing rather than silently degrading, so a deployment
 # without it still serves every non-narration endpoint.
-MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY") or None
 MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-large-latest")
+
+
+def _load_mistral_keys() -> list[str]:
+    """Ordered list of Mistral API keys, first one preferred.
+
+    Multiple keys exist for quota failover, not load balancing: the shared
+    tier exhausts, and a second key lets narration keep working instead of
+    going dark mid-demo. app/agent/narration.py walks this list in order
+    and only advances when a key is genuinely spent or rejected.
+
+    Two supported shapes, so neither a .env nor a container env-var list
+    is awkward:
+      MISTRAL_API_KEY=k1
+      MISTRAL_API_KEY_2=k2          (also _3, _4, ... contiguous)
+    or a single comma-separated variable:
+      MISTRAL_API_KEYS=k1,k2,k3
+
+    Order is deterministic: MISTRAL_API_KEYS first if set, else
+    MISTRAL_API_KEY then the numbered ones ascending. Duplicates are
+    dropped (a key repeated across variables would otherwise burn two
+    failover attempts on the same exhausted quota) and order is preserved.
+    """
+    raw = os.getenv("MISTRAL_API_KEYS", "").strip()
+    if raw:
+        candidates = [k.strip() for k in raw.split(",")]
+    else:
+        candidates = [os.getenv("MISTRAL_API_KEY", "")]
+        index = 2
+        while True:
+            value = os.getenv(f"MISTRAL_API_KEY_{index}")
+            if value is None:
+                break  # contiguous only -- a gap ends the list, not a silent skip
+            candidates.append(value)
+            index += 1
+
+    seen: set[str] = set()
+    keys: list[str] = []
+    for key in (k.strip() for k in candidates):
+        if key and key not in seen:
+            seen.add(key)
+            keys.append(key)
+    return keys
+
+
+MISTRAL_API_KEYS = _load_mistral_keys()
+
+# Backwards compatibility: existing code and tests read MISTRAL_API_KEY as
+# "is narration configured at all". None when no key is set anywhere.
+MISTRAL_API_KEY = MISTRAL_API_KEYS[0] if MISTRAL_API_KEYS else None
 
 # --- Database ---------------------------------------------------------------
 # Relative "data/payments.db" by default (the committed demo database, so a

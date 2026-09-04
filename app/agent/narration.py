@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -22,8 +23,10 @@ from ..investigation.models import InvestigationCase, InvestigationCaseAlert
 from ..investigation.trend import category_weekly_trend
 from ..operations.models import OperationalIssue
 from ..reconciliation.models import ReconciliationBreak
-from .client import MODEL, get_client
+from .client import MODEL, get_clients
 from .models import AgentNarrative
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are a payment-operations analyst assistant for a bank's internal \
 fraud/operations dashboard. You will be given a JSON object of REAL, already-computed \
@@ -196,24 +199,97 @@ def facts_for_investigation_case(db: Session, case: InvestigationCase, alerts: l
 _MAX_ATTEMPTS = 3
 _RETRY_DELAY_SECONDS = 3.0
 
+# Substrings that mean "this particular key has nothing left to give":
+# quota spent, rate limited, or rejected outright. Matched case-insensitively
+# against the exception text, because the SDK surfaces these as a generic
+# SDKError whose useful detail is the message body, not a typed class.
+#
+# "tier_not_allowed" is deliberately in here even though it is really a
+# burst rate limit (see above): it is still worth trying the next key, and
+# the per-key retries below already cover the transient reading of it.
+_KEY_EXHAUSTED_MARKERS = (
+    "429",
+    "rate limit",
+    "rate_limit",
+    "quota",
+    "insufficient",
+    "tier_not_allowed",
+    "capacity exceeded",
+)
 
-async def _complete_with_retry(client, facts: dict[str, Any]):
+# Substrings that mean the key itself is bad. No point retrying these on the
+# same key at all -- fail over immediately rather than burning ~9s of backoff
+# on a credential that will never work.
+_KEY_INVALID_MARKERS = (
+    "401",
+    "unauthorized",
+    "invalid api key",
+    "invalid_api_key",
+)
+
+
+def _classify(exc: Exception) -> str:
+    """'invalid' (skip this key now), 'exhausted' (this key is spent --
+    retry briefly, then fail over), or 'transient' (retry on this key).
+    """
+    text = str(exc).lower()
+    if any(m in text for m in _KEY_INVALID_MARKERS):
+        return "invalid"
+    if any(m in text for m in _KEY_EXHAUSTED_MARKERS):
+        return "exhausted"
+    return "transient"
+
+
+async def _complete_once(client, facts: dict[str, Any]):
+    return await client.chat.complete_async(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps(facts)},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.2,  # low -- this summarizes given facts, it doesn't creatively write
+    )
+
+
+async def _complete_with_retry(facts: dict[str, Any]):
+    """Try each configured key in order, retrying transient failures within
+    a key before moving on.
+
+    Failover exists because the shared tier exhausts: when the first key is
+    spent, narration should keep working on the next rather than going dark.
+    A key is only abandoned when its failure says so -- an invalid key is
+    skipped immediately (no backoff on a credential that can never work),
+    an exhausted/rate-limited one gets the short retry cycle first, since
+    the most common shape of that error here is genuinely transient.
+
+    Raises the last real error if every key is exhausted, so the caller
+    still falls back to the plain-facts display rather than showing
+    anything ungrounded.
+    """
+    clients = get_clients()
     last_exc: Exception | None = None
-    for attempt in range(_MAX_ATTEMPTS):
-        try:
-            return await client.chat.complete_async(
-                model=MODEL,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": json.dumps(facts)},
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.2,  # low -- this summarizes given facts, it doesn't creatively write
-            )
-        except Exception as exc:  # transient rate-limit-shaped API error -- see comment above
-            last_exc = exc
-            if attempt < _MAX_ATTEMPTS - 1:
+
+    for key_index, client in enumerate(clients):
+        for attempt in range(_MAX_ATTEMPTS):
+            try:
+                return await _complete_once(client, facts)
+            except Exception as exc:
+                last_exc = exc
+                kind = _classify(exc)
+                if kind == "invalid":
+                    break  # dead credential -- next key, no backoff
+                is_last_attempt = attempt == _MAX_ATTEMPTS - 1
+                if is_last_attempt:
+                    break  # out of attempts on this key -- next key
                 await asyncio.sleep(_RETRY_DELAY_SECONDS * (attempt + 1))
+
+        if key_index < len(clients) - 1:
+            logger.warning(
+                "Mistral key %d/%d unusable (%s); failing over to the next key.",
+                key_index + 1, len(clients), _classify(last_exc) if last_exc else "unknown",
+            )
+
     raise last_exc
 
 
@@ -233,8 +309,7 @@ async def narrate(facts: dict[str, Any]) -> dict[str, Any]:
     the server is handling. complete_async (the SDK's own async method,
     not a manual thread-pool workaround) avoids that.
     """
-    client = get_client()
-    response = await _complete_with_retry(client, facts)
+    response = await _complete_with_retry(facts)
     content = response.choices[0].message.content
     parsed = json.loads(content)
 
