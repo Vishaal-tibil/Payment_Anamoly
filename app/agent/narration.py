@@ -81,6 +81,10 @@ present, you may reference its "direction" ("increasing"/"decreasing"/"stable"),
 computed numbers. If "category_trend" is null/absent, do not mention a trend, rate of \
 change, or week-over-week comparison at all -- there is no real data behind one.
 
+9. Write PLAIN TEXT only -- no markdown, no asterisks, no bold or italic markers, no \
+bullet characters, no backticks. Every string you return is rendered verbatim into a \
+dashboard, so "**5 duplicate payments**" appears on screen with the asterisks visible.
+
 Respond with a JSON object with exactly these keys: "title" (string, 60 characters or \
 fewer), "description" (string, 1-2 sentences), "recommended_actions" (array of 1 to 3 \
 objects, ranked most-important first, each with "title" (string, 8 words or fewer), \

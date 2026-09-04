@@ -23,7 +23,7 @@ services:
       # exhausted. Failover, not load balancing: the primary is preferred.
       MISTRAL_API_KEY_2: ${MISTRAL_API_KEY_2:-}
       MISTRAL_API_KEY_3: ${MISTRAL_API_KEY_3:-}
-      MISTRAL_MODEL: ${MISTRAL_MODEL:-mistral-large-latest}
+      MISTRAL_MODEL: ${MISTRAL_MODEL:-ministral-8b-latest}
       # Exact origins of the hosted frontend, comma-separated. When set,
       # the localhost dev regex is NOT also allowed (see app/config.py).
       CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-}

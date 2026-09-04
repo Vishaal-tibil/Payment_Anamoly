@@ -105,8 +105,25 @@ analyst-readable narrative plus 1–3 ranked recommended actions.
   appears verbatim in the output. A truncated or paraphrased identifier is a
   correctness bug in an operational tool, so it's checked, not trusted.
 - **Cached** in `agent_narratives`, keyed by
-  `(signal_type, tenant, reference_id)`. Measured: **~14s cold, ~200ms
-  cached**. Never called on page load — only from an explicit user action.
+  `(signal_type, tenant, reference_id)`. Measured on `ministral-8b-latest`:
+  **~6s cold, ~200ms cached**. Never called on page load — only from an
+  explicit user action.
+
+### Model choice
+
+Default is **`ministral-8b-latest`**, not `mistral-large-latest`, and that is
+a measured decision. Against this project's real keys, `mistral-large-latest`
+returns `403 tier_not_allowed` on **every** call — three separate keys, same
+error, so it is a genuine plan restriction, not a rate limit.
+`mistral-small`/`medium` stay 429-limited even with backoff. `ministral-8b`
+and `open-mistral-7b` are reachable.
+
+`ministral-8b-latest` measured **6/6 on the code-enforced grounding check** at
+~6s per call versus ~14s for large. On a paid plan, override `MISTRAL_MODEL`
+to use a larger model.
+
+Run `python scripts/check_mistral_keys.py` to see which models your own keys
+can actually reach.
 - **Optional.** Without a key the narration endpoints fail with a clear error
   and every other endpoint keeps working.
 - The shared API tier intermittently returns a mis-worded `403` that is really

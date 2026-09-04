@@ -20,7 +20,13 @@ load_dotenv()
 # EnvironmentFile, or `docker run --env-file`). The agent raises a clear
 # error if it's missing rather than silently degrading, so a deployment
 # without it still serves every non-narration endpoint.
-MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-large-latest")
+# ministral-8b-latest, not mistral-large-latest: measured against this
+# project's real keys, mistral-large returns "403 tier_not_allowed" on every
+# call (a genuine plan restriction -- three separate keys, same error), and
+# mistral-small/medium stay 429-limited even with backoff. ministral-8b is
+# reachable, and measured 6/6 on the code-enforced grounding check at ~6s
+# per call versus ~14s. Override MISTRAL_MODEL on a paid plan to use large.
+MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "ministral-8b-latest")
 
 
 def _load_mistral_keys() -> list[str]:
